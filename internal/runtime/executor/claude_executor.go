@@ -1058,6 +1058,9 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if stabilizeDeviceProfile {
+		helps.ApplyClaudeDeviceProfileHeaders(r, deviceProfile)
+	}
 	// Re-enforce Accept-Encoding: identity after ApplyCustomHeadersFromAttrs, which
 	// may override it with a user-configured value.  Compressed SSE breaks the line
 	// scanner regardless of user preference, so this is non-negotiable for streams.

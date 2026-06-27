@@ -39,8 +39,9 @@ type AmpModule struct {
 	restrictMu          sync.RWMutex
 
 	// configMu protects lastConfig for partial reload comparison
-	configMu   sync.RWMutex
-	lastConfig *config.AmpCode
+	configMu    sync.RWMutex
+	lastConfig  *config.AmpCode
+	lastPrivacy config.PrivacyConfig
 }
 
 // New creates a new Amp routing module with the given options.
@@ -128,6 +129,7 @@ func (m *AmpModule) Register(ctx modules.Context) error {
 
 		// Store initial config for partial reload comparison
 		m.lastConfig = new(settings)
+		m.lastPrivacy = ctx.Config.Privacy
 
 		// Initialize localhost restriction setting (hot-reloadable)
 		m.setRestrictToLocalhost(settings.RestrictManagementToLocalhost)
@@ -147,7 +149,7 @@ func (m *AmpModule) Register(ctx modules.Context) error {
 			return
 		}
 
-		if err := m.enableUpstreamProxy(upstreamURL, &settings); err != nil {
+		if err := m.enableUpstreamProxy(upstreamURL, &settings, ctx.Config.Privacy); err != nil {
 			regErr = fmt.Errorf("failed to create amp proxy: %w", err)
 			return
 		}
@@ -179,10 +181,12 @@ func (m *AmpModule) getAuthMiddleware(ctx modules.Context) gin.HandlerFunc {
 // Supports hot-reload for: model-mappings, upstream-api-key, upstream-url, restrict-management-to-localhost.
 func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	newSettings := cfg.AmpCode
+	newPrivacy := cfg.Privacy
 
 	// Get previous config for comparison
 	m.configMu.RLock()
 	oldSettings := m.lastConfig
+	oldPrivacy := m.lastPrivacy
 	m.configMu.RUnlock()
 
 	if oldSettings != nil && oldSettings.RestrictManagementToLocalhost != newSettings.RestrictManagementToLocalhost {
@@ -196,7 +200,7 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	}
 
 	if !m.enabled && newUpstreamURL != "" {
-		if err := m.enableUpstreamProxy(newUpstreamURL, &newSettings); err != nil {
+		if err := m.enableUpstreamProxy(newUpstreamURL, &newSettings, newPrivacy); err != nil {
 			log.Errorf("amp config: failed to enable upstream proxy for %s: %v", newUpstreamURL, err)
 		}
 	}
@@ -216,9 +220,9 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 		if newUpstreamURL == "" && oldUpstreamURL != "" {
 			m.setProxy(nil)
 			m.enabled = false
-		} else if oldUpstreamURL != "" && newUpstreamURL != oldUpstreamURL && newUpstreamURL != "" {
+		} else if oldUpstreamURL != "" && newUpstreamURL != "" && (newUpstreamURL != oldUpstreamURL || newPrivacy != oldPrivacy) {
 			// Recreate proxy with new URL
-			proxy, err := createReverseProxy(newUpstreamURL, m.secretSource)
+			proxy, err := createReverseProxy(newUpstreamURL, m.secretSource, newPrivacy)
 			if err != nil {
 				log.Errorf("amp config: failed to create proxy for new upstream URL %s: %v", newUpstreamURL, err)
 			} else {
@@ -252,12 +256,13 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	m.configMu.Lock()
 	settingsCopy := newSettings // copy struct
 	m.lastConfig = &settingsCopy
+	m.lastPrivacy = newPrivacy
 	m.configMu.Unlock()
 
 	return nil
 }
 
-func (m *AmpModule) enableUpstreamProxy(upstreamURL string, settings *config.AmpCode) error {
+func (m *AmpModule) enableUpstreamProxy(upstreamURL string, settings *config.AmpCode, privacy config.PrivacyConfig) error {
 	if m.secretSource == nil {
 		// Create MultiSourceSecret as the default source, then wrap with MappedSecretSource
 		defaultSource := NewMultiSourceSecret(settings.UpstreamAPIKey, 0 /* default 5min */)
@@ -277,7 +282,7 @@ func (m *AmpModule) enableUpstreamProxy(upstreamURL string, settings *config.Amp
 		m.secretSource = mappedSource
 	}
 
-	proxy, err := createReverseProxy(upstreamURL, m.secretSource)
+	proxy, err := createReverseProxy(upstreamURL, m.secretSource, privacy)
 	if err != nil {
 		return err
 	}

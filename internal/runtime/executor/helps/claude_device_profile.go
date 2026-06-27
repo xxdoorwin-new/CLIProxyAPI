@@ -79,6 +79,9 @@ type claudeDeviceProfileCacheEntry struct {
 }
 
 func ClaudeDeviceProfileStabilizationEnabled(cfg *config.Config) bool {
+	if config.DeviceMasqueradeEnabled(cfg) {
+		return true
+	}
 	if cfg == nil || cfg.ClaudeHeaderDefaults.StabilizeDeviceProfile == nil {
 		return false
 	}

@@ -7,10 +7,34 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
+
+type proxyTracingScrubRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (t proxyTracingScrubRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	misc.ScrubProxyTracingHeaders(req.Header)
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
+func scrubProxyTracingTransport(base http.RoundTripper, enabled bool) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if !enabled {
+		return base
+	}
+	return proxyTracingScrubRoundTripper{base: base}
+}
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
@@ -30,6 +54,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	}
+	ipMasquerade := config.IPMasqueradeEnabled(cfg)
 
 	// Priority 1: Use auth.ProxyURL if configured
 	var proxyURL string
@@ -46,7 +71,7 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
-			httpClient.Transport = transport
+			httpClient.Transport = scrubProxyTracingTransport(transport, ipMasquerade)
 			return httpClient
 		}
 		// If proxy setup failed, log and fall through to context RoundTripper
@@ -54,8 +79,13 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-		httpClient.Transport = rt
+	if ctx != nil {
+		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+			httpClient.Transport = scrubProxyTracingTransport(rt, ipMasquerade)
+		}
+	}
+	if httpClient.Transport == nil {
+		httpClient.Transport = scrubProxyTracingTransport(http.DefaultTransport, ipMasquerade)
 	}
 
 	return httpClient

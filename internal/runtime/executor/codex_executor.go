@@ -1596,7 +1596,16 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
-	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	deviceMasquerade := config.DeviceMasqueradeEnabled(cfg)
+	stableUserAgent := strings.TrimSpace(cfgUserAgent)
+	if deviceMasquerade {
+		if stableUserAgent == "" {
+			stableUserAgent = codexUserAgent
+		}
+		r.Header.Set("User-Agent", stableUserAgent)
+	} else {
+		ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	}
 
 	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
 		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
@@ -1632,6 +1641,9 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if deviceMasquerade {
+		r.Header.Set("User-Agent", stableUserAgent)
+	}
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

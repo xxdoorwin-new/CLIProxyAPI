@@ -181,10 +181,10 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	}
 
 	client := &http.Client{
-		Transport: &fallbackRoundTripper{
+		Transport: scrubProxyTracingTransport(&fallbackRoundTripper{
 			utls:     utlsRT,
 			fallback: standardTransport,
-		},
+		}, config.IPMasqueradeEnabled(cfg)),
 	}
 	if timeout > 0 {
 		client.Timeout = timeout

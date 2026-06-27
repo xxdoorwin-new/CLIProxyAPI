@@ -32,6 +32,28 @@ remote-management:
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
   panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 
+# Tenant-facing user registration, user API keys, and credit quota management.
+# Disabled by default; existing api-keys behavior is preserved while disabled.
+user-management:
+  enabled: false
+  registration:
+    # When true, unauthenticated visitors can create pending user accounts.
+    enabled: false
+  storage:
+    # Initial implementation uses sqlite. Empty path uses the writable application data directory.
+    driver: "sqlite"
+    path: ""
+  sessions:
+    # User portal session lifetime. Empty uses the service default.
+    ttl: ""
+  quota:
+    # Default quota period for newly approved users.
+    default-period: "monthly"
+    # Default monthly credit limit for newly approved users. Zero means no default quota.
+    default-monthly-credits: 0
+    # Credits charged when a routed request completes without token usage metadata.
+    missing-usage-credits: 0
+
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
 
@@ -249,6 +271,16 @@ nonstream-keepalive-interval: 0
 #       cache-user-id: true          # optional: default is false; set true to reuse cached user_id per API key instead of generating a random one each request
 #     experimental-cch-signing: false # optional: default is false; when true, sign the final /v1/messages body using the current Claude Code cch algorithm
 #                                     # keep this disabled unless you explicitly need the behavior, so upstream seed changes fall back to legacy proxy behavior
+
+# Optional privacy masquerading. Disabled by default.
+# ip-masquerade removes proxy tracing headers such as X-Forwarded-For,
+# X-Real-IP, Forwarded, Via, and similar client-IP headers before upstream calls.
+# device-masquerade pins provider-specific client/device fingerprints where
+# supported, e.g. Claude keeps Claude Code-style User-Agent/X-Stainless headers
+# and Codex keeps Codex-style User-Agent defaults instead of downstream overrides.
+# privacy:
+#   ip-masquerade: false
+#   device-masquerade: false
 
 # Default headers for Claude API requests. Update when Claude Code releases new versions.
 # In legacy mode, user-agent/package-version/runtime-version/timeout are used as fallbacks

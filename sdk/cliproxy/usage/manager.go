@@ -250,6 +250,37 @@ func (m *Manager) RegisterNamed(name string, plugin Plugin) {
 	m.pluginsMu.Unlock()
 }
 
+// UnregisterNamed removes a named plugin from the delivery list.
+func (m *Manager) UnregisterNamed(name string) {
+	if m == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+
+	m.pluginsMu.Lock()
+	defer m.pluginsMu.Unlock()
+	if m.named == nil {
+		return
+	}
+	index, exists := m.named[name]
+	if !exists {
+		return
+	}
+	delete(m.named, name)
+	if index < 0 || index >= len(m.plugins) {
+		return
+	}
+	m.plugins = append(m.plugins[:index], m.plugins[index+1:]...)
+	for key, value := range m.named {
+		if value > index {
+			m.named[key] = value - 1
+		}
+	}
+}
+
 // Publish enqueues a usage record for processing. If no plugin is registered
 // the record will be discarded downstream.
 func (m *Manager) Publish(ctx context.Context, record Record) {
@@ -320,6 +351,9 @@ func RegisterPlugin(plugin Plugin) { DefaultManager().Register(plugin) }
 
 // RegisterNamedPlugin registers or replaces a named plugin on the default manager.
 func RegisterNamedPlugin(name string, plugin Plugin) { DefaultManager().RegisterNamed(name, plugin) }
+
+// UnregisterNamedPlugin removes a named plugin from the default manager.
+func UnregisterNamedPlugin(name string) { DefaultManager().UnregisterNamed(name) }
 
 // PublishRecord publishes a record using the default manager.
 func PublishRecord(ctx context.Context, record Record) { DefaultManager().Publish(ctx, record) }

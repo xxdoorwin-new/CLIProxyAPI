@@ -93,6 +93,100 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 	}
 }
 
+func TestCodexWebsocketsExecuteStreamEmitsTokenCountFromCompletedUsage(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Fatalf("read upstream websocket message: %v", errRead)
+		}
+		completed := []byte(`{"type":"response.completed","model_context_window":258400,"rate_limits":{"limit_id":"codex","primary":{"used_percent":4.0,"window_minutes":300,"resets_at":1781594936},"secondary":{"used_percent":8.0,"window_minutes":10080,"resets_at":1782114707},"credits":{"has_credits":false,"unlimited":false,"balance":null}},"response":{"id":"resp-1","output":[],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":3},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":15}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
+			t.Fatalf("write completed websocket message: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{ID: "auth-1", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`),
+	}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("codex")}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var tokenCount []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		payload := codexTestJSONPayloadFromStreamChunk(chunk.Payload)
+		if gjson.GetBytes(payload, "type").String() == "token_count" {
+			tokenCount = payload
+		}
+	}
+	if len(tokenCount) == 0 {
+		t.Fatalf("missing token_count payload")
+	}
+	if got := gjson.GetBytes(tokenCount, "info.last_token_usage.input_tokens").Int(); got != 10 {
+		t.Fatalf("last input tokens = %d, want 10; payload=%s", got, tokenCount)
+	}
+	if got := gjson.GetBytes(tokenCount, "info.last_token_usage.cached_input_tokens").Int(); got != 3 {
+		t.Fatalf("last cached input tokens = %d, want 3; payload=%s", got, tokenCount)
+	}
+	if got := gjson.GetBytes(tokenCount, "info.last_token_usage.reasoning_output_tokens").Int(); got != 2 {
+		t.Fatalf("last reasoning output tokens = %d, want 2; payload=%s", got, tokenCount)
+	}
+	if got := gjson.GetBytes(tokenCount, "info.model_context_window").Int(); got != 258400 {
+		t.Fatalf("model context window = %d, want 258400; payload=%s", got, tokenCount)
+	}
+	if got := gjson.GetBytes(tokenCount, "rate_limits.primary.window_minutes").Int(); got != 300 {
+		t.Fatalf("primary window minutes = %d, want 300; payload=%s", got, tokenCount)
+	}
+	if got := gjson.GetBytes(tokenCount, "rate_limits.secondary.window_minutes").Int(); got != 10080 {
+		t.Fatalf("secondary window minutes = %d, want 10080; payload=%s", got, tokenCount)
+	}
+}
+
+func TestBuildCodexTokenCountPayloadFromCompletedAccumulatesSessionUsage(t *testing.T) {
+	sess := &codexWebsocketSession{}
+	preflight := []byte(`{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":5.0,"window_minutes":300},"secondary":{"used_percent":9.0,"window_minutes":10080}}}`)
+	if got := updateCodexSessionFromTokenCount(sess, preflight); got {
+		t.Fatalf("preflight token_count with null info must not count as usage")
+	}
+	first := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`)
+	second := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}`)
+
+	firstTokenCount := buildCodexTokenCountPayloadFromCompleted(first, sess)
+	if got := gjson.GetBytes(firstTokenCount, "info.total_token_usage.total_tokens").Int(); got != 15 {
+		t.Fatalf("first total tokens = %d, want 15; payload=%s", got, firstTokenCount)
+	}
+	if got := gjson.GetBytes(firstTokenCount, "rate_limits.primary.window_minutes").Int(); got != 300 {
+		t.Fatalf("first primary window minutes = %d, want 300; payload=%s", got, firstTokenCount)
+	}
+
+	secondTokenCount := buildCodexTokenCountPayloadFromCompleted(second, sess)
+	if got := gjson.GetBytes(secondTokenCount, "info.total_token_usage.input_tokens").Int(); got != 17 {
+		t.Fatalf("second total input tokens = %d, want 17; payload=%s", got, secondTokenCount)
+	}
+	if got := gjson.GetBytes(secondTokenCount, "info.total_token_usage.total_tokens").Int(); got != 24 {
+		t.Fatalf("second total tokens = %d, want 24; payload=%s", got, secondTokenCount)
+	}
+	if got := gjson.GetBytes(secondTokenCount, "info.last_token_usage.total_tokens").Int(); got != 9 {
+		t.Fatalf("second last tokens = %d, want 9; payload=%s", got, secondTokenCount)
+	}
+}
+
 func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +245,30 @@ func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) 
 	}
 }
 
+func codexTestJSONPayloadFromStreamChunk(chunk []byte) []byte {
+	lines := bytes.Split(chunk, []byte("\n"))
+	for i := range lines {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 || bytes.HasPrefix(line, []byte("event:")) {
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			line = bytes.TrimSpace(line[len("data:"):])
+		}
+		if gjson.GetBytes(line, "type").String() != "" {
+			return bytes.Clone(line)
+		}
+	}
+	trimmed := bytes.TrimSpace(chunk)
+	if bytes.HasPrefix(trimmed, []byte("data:")) {
+		trimmed = bytes.TrimSpace(trimmed[len("data:"):])
+	}
+	if gjson.GetBytes(trimmed, "type").String() != "" {
+		return bytes.Clone(trimmed)
+	}
+	return nil
+}
+
 func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) {
 	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil)
 
@@ -198,9 +316,13 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing
 		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
 		"X-Client-Request-Id":   "019d2233-e240-7162-992d-38df0a2a0e0d",
 		"session-id":            "legacy-session",
+		"X-Forwarded-For":       "203.0.113.7",
+		"X-Real-IP":             "203.0.113.8",
+		"Forwarded":             "for=203.0.113.9",
 	})
 
-	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", nil)
+	cfg := &config.Config{Privacy: config.PrivacyConfig{IPMasquerade: true}}
+	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", cfg)
 
 	if got := headers.Get("Originator"); got != "Codex Desktop" {
 		t.Fatalf("Originator = %s, want %s", got, "Codex Desktop")
@@ -222,6 +344,11 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing
 	}
 	if got := headers.Get("Session-Id"); got != "" {
 		t.Fatalf("Session-Id = %s, want empty", got)
+	}
+	for _, key := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded"} {
+		if got := headers.Get(key); got != "" {
+			t.Fatalf("%s = %q, want empty", key, got)
+		}
 	}
 }
 
@@ -323,6 +450,45 @@ func TestApplyCodexWebsocketHeadersConfigUserAgentOverridesClientHeader(t *testi
 	}
 	if got := headers.Get("x-codex-beta-features"); got != "client-beta" {
 		t.Fatalf("x-codex-beta-features = %s, want %s", got, "client-beta")
+	}
+}
+
+func TestApplyCodexWebsocketHeadersConfigUserAgentOverridesCustomHeader(t *testing.T) {
+	cfg := &config.Config{
+		Privacy: config.PrivacyConfig{DeviceMasquerade: true},
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent: "config-ua",
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"header:User-Agent": "custom-ua",
+		},
+		Metadata: map[string]any{"email": "user@example.com"},
+	}
+
+	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "", cfg)
+
+	if got := headers.Get("User-Agent"); got != "config-ua" {
+		t.Fatalf("User-Agent = %s, want %s", got, "config-ua")
+	}
+}
+
+func TestApplyCodexWebsocketHeadersDeviceMasqueradeUsesDefaultUserAgent(t *testing.T) {
+	cfg := &config.Config{Privacy: config.PrivacyConfig{DeviceMasquerade: true}}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"header:User-Agent": "custom-ua",
+		},
+		Metadata: map[string]any{"email": "user@example.com"},
+	}
+
+	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "", cfg)
+
+	if got := headers.Get("User-Agent"); got != codexUserAgent {
+		t.Fatalf("User-Agent = %s, want %s", got, codexUserAgent)
 	}
 }
 
@@ -670,6 +836,53 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	}
 	if got := req.Header.Get("x-codex-beta-features"); got != "" {
 		t.Fatalf("x-codex-beta-features = %q, want empty", got)
+	}
+}
+
+func TestApplyCodexHeadersConfigUserAgentOverridesCustomHeader(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	cfg := &config.Config{
+		Privacy: config.PrivacyConfig{DeviceMasquerade: true},
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent: "config-ua",
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"header:User-Agent": "custom-ua",
+		},
+		Metadata: map[string]any{"email": "user@example.com"},
+	}
+
+	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
+
+	if got := req.Header.Get("User-Agent"); got != "config-ua" {
+		t.Fatalf("User-Agent = %s, want %s", got, "config-ua")
+	}
+}
+
+func TestApplyCodexHeadersDeviceMasqueradeUsesDefaultUserAgent(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	cfg := &config.Config{Privacy: config.PrivacyConfig{DeviceMasquerade: true}}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"header:User-Agent": "custom-ua",
+		},
+		Metadata: map[string]any{"email": "user@example.com"},
+	}
+
+	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
+
+	if got := req.Header.Get("User-Agent"); got != codexUserAgent {
+		t.Fatalf("User-Agent = %s, want %s", got, codexUserAgent)
 	}
 }
 

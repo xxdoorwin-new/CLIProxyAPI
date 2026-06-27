@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
@@ -57,7 +58,12 @@ func (rc *readCloser) Close() error               { return rc.c.Close() }
 
 // createReverseProxy creates a reverse proxy handler for Amp upstream
 // with automatic gzip decompression via ModifyResponse
-func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputil.ReverseProxy, error) {
+func createReverseProxy(upstreamURL string, secretSource SecretSource, privacyOpt ...config.PrivacyConfig) (*httputil.ReverseProxy, error) {
+	var privacy config.PrivacyConfig
+	if len(privacyOpt) > 0 {
+		privacy = privacyOpt[0]
+	}
+
 	parsed, err := url.Parse(upstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid amp upstream url: %w", err)
@@ -77,8 +83,12 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 		req.Header.Del("X-Api-Key")
 		req.Header.Del("X-Goog-Api-Key")
 
-		// Remove proxy, client identity, and browser fingerprint headers
-		misc.ScrubProxyAndFingerprintHeaders(req)
+		if privacy.IPMasquerade {
+			misc.ScrubProxyTracingHeaders(req.Header)
+		}
+		if privacy.DeviceMasquerade {
+			misc.ScrubDeviceFingerprintHeaders(req.Header)
+		}
 
 		// Remove query-based credentials if they match the authenticated client API key.
 		// This prevents leaking client auth material to the Amp upstream while avoiding

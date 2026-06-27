@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
+	useraccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/user_access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
@@ -35,6 +36,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usermanagement"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -181,6 +183,11 @@ type Server struct {
 
 	// accessManager handles request authentication providers.
 	accessManager *sdkaccess.Manager
+
+	userManagementMu sync.RWMutex
+	userStore        *usermanagement.SQLiteStore
+	userStorePath    string
+	userModelPolicy  *usermanagement.ModelPolicyService
 
 	// requestLogger is the request logger instance for dynamic configuration updates.
 	requestLogger logging.RequestLogger
@@ -410,6 +417,7 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.registerUserSessionRoutes()
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -418,7 +426,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -439,7 +447,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -448,7 +456,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -592,7 +600,7 @@ func (s *Server) registerManagementRoutes() {
 	log.Info("management routes registered after secret key configuration")
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt.Use(s.managementAvailabilityMiddleware(), s.managementAccessMiddleware())
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
@@ -644,6 +652,28 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
+		mgmt.GET("/users", s.handleAdminListUsers)
+		mgmt.GET("/users/pending", s.handleAdminListPendingUsers)
+		mgmt.GET("/users/:id", s.handleAdminGetUser)
+		mgmt.POST("/users/:id/approve", s.handleAdminApproveUser)
+		mgmt.POST("/users/:id/reject", s.handleAdminRejectUser)
+		mgmt.POST("/users/:id/suspend", s.handleAdminSuspendUser)
+		mgmt.POST("/users/:id/reactivate", s.handleAdminReactivateUser)
+		mgmt.GET("/users/:id/api-keys", s.handleAdminListUserAPIKeys)
+		mgmt.POST("/users/:id/api-keys", s.handleAdminCreateUserAPIKey)
+		mgmt.PATCH("/users/:id/api-keys/:key_id", s.handleAdminRenameUserAPIKey)
+		mgmt.POST("/users/:id/api-keys/:key_id/disable", s.handleAdminDisableUserAPIKey)
+		mgmt.POST("/users/:id/api-keys/:key_id/revoke", s.handleAdminRevokeUserAPIKey)
+		mgmt.POST("/users/:id/api-keys/:key_id/rotate", s.handleAdminRotateUserAPIKey)
+		mgmt.GET("/users/:id/model-policy", s.handleAdminGetUserModelPolicy)
+		mgmt.PUT("/users/:id/model-policy", s.handleAdminSetUserModelPolicy)
+		mgmt.GET("/users/:id/api-keys/:key_id/model-policy", s.handleAdminGetAPIKeyModelPolicy)
+		mgmt.PUT("/users/:id/api-keys/:key_id/model-policy", s.handleAdminSetAPIKeyModelPolicy)
+		mgmt.GET("/users/:id/quota-policy", s.handleAdminGetUserQuotaPolicy)
+		mgmt.PUT("/users/:id/quota-policy", s.handleAdminSetUserQuotaPolicy)
+		mgmt.GET("/pricing-rules", s.handleAdminListPricingRules)
+		mgmt.PUT("/pricing-rules", s.handleAdminSetPricingRule)
+		mgmt.DELETE("/pricing-rules", s.handleAdminDeletePricingRule)
 
 		mgmt.GET("/gemini-api-key", s.mgmt.GetGeminiKeys)
 		mgmt.PUT("/gemini-api-key", s.mgmt.PutGeminiKeys)
@@ -955,6 +985,10 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 				s.handleHomeCodexClientModels(c)
 				return
 			}
+			if models, ok := s.filterModelListForUser(c, openaiHandler.Models()); ok {
+				c.JSON(http.StatusOK, openai.CodexClientModelsResponse(models))
+				return
+			}
 			openaiHandler.OpenAIModels(c)
 			return
 		}
@@ -969,9 +1003,17 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		// Route to Claude handler if User-Agent starts with "claude-cli"
 		if strings.HasPrefix(userAgent, "claude-cli") {
 			// log.Debugf("Routing /v1/models to Claude handler for User-Agent: %s", userAgent)
+			if models, ok := s.filterModelListForUser(c, claudeHandler.Models()); ok {
+				writeClaudeModels(c, models)
+				return
+			}
 			claudeHandler.ClaudeModels(c)
 		} else {
 			// log.Debugf("Routing /v1/models to OpenAI handler for User-Agent: %s", userAgent)
+			if models, ok := s.filterModelListForUser(c, openaiHandler.Models()); ok {
+				writeOpenAIModels(c, models)
+				return
+			}
 			openaiHandler.OpenAIModels(c)
 		}
 	}
@@ -1001,6 +1043,7 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 		}
 		models = append(models, model)
 	}
+	models = s.filterModelMapsForUser(c, models)
 
 	c.JSON(http.StatusOK, openai.CodexClientModelsResponse(models))
 }
@@ -1009,6 +1052,12 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 	return func(c *gin.Context) {
 		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
 			s.handleHomeGeminiModels(c)
+			return
+		}
+		if models, ok := s.filterModelListForUser(c, geminiHandler.Models()); ok {
+			c.JSON(http.StatusOK, gin.H{
+				"models": normalizeGeminiModelList(models),
+			})
 			return
 		}
 
@@ -1059,6 +1108,7 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 			}
 			out = append(out, model)
 		}
+		out = s.filterModelMapsForUser(c, out)
 		firstID := ""
 		lastID := ""
 		if len(out) > 0 {
@@ -1092,6 +1142,7 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		}
 		filtered = append(filtered, model)
 	}
+	filtered = s.filterModelMapsForUser(c, filtered)
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   filtered,
@@ -1105,7 +1156,7 @@ func (s *Server) handleHomeGeminiModels(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"models": formatHomeGeminiModels(entries),
+		"models": s.filterModelMapsForUser(c, formatHomeGeminiModels(entries)),
 	})
 }
 
@@ -1170,6 +1221,166 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 	}
 
 	return entries, true
+}
+
+func (s *Server) filterModelListForUser(c *gin.Context, models []map[string]any) ([]map[string]any, bool) {
+	userID, keyID := userPrincipalFromContext(c)
+	if userID == "" {
+		return models, false
+	}
+	s.userManagementMu.RLock()
+	policy := s.userModelPolicy
+	s.userManagementMu.RUnlock()
+	if policy == nil {
+		return models, false
+	}
+	resolved, err := policy.ResolveForAPIKey(c.Request.Context(), userID, keyID)
+	if err != nil {
+		log.Errorf("failed to resolve user model policy: %v", err)
+		return []map[string]any{}, true
+	}
+	if resolved.AllowAll {
+		return cloneModelMaps(models), true
+	}
+	allowed := make(map[string]struct{}, len(resolved.Models))
+	for _, model := range resolved.Models {
+		normalized := normalizeClientModelName(model)
+		if normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return []map[string]any{}, true
+	}
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		if modelAllowedBySet(model, allowed) {
+			filtered = append(filtered, cloneModelMap(model))
+		}
+	}
+	return filtered, true
+}
+
+func (s *Server) filterModelMapsForUser(c *gin.Context, models []map[string]any) []map[string]any {
+	filtered, ok := s.filterModelListForUser(c, models)
+	if !ok {
+		return models
+	}
+	return filtered
+}
+
+func writeOpenAIModels(c *gin.Context, models []map[string]any) {
+	filteredModels := make([]map[string]any, len(models))
+	for i, model := range models {
+		filteredModel := map[string]any{
+			"id":     model["id"],
+			"object": model["object"],
+		}
+		if created, exists := model["created"]; exists {
+			filteredModel["created"] = created
+		}
+		if ownedBy, exists := model["owned_by"]; exists {
+			filteredModel["owned_by"] = ownedBy
+		}
+		filteredModels[i] = filteredModel
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"object": "list",
+		"data":   filteredModels,
+	})
+}
+
+func writeClaudeModels(c *gin.Context, models []map[string]any) {
+	firstID := ""
+	lastID := ""
+	if len(models) > 0 {
+		if id, ok := models[0]["id"].(string); ok {
+			firstID = id
+		}
+		if id, ok := models[len(models)-1]["id"].(string); ok {
+			lastID = id
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":     models,
+		"has_more": false,
+		"first_id": firstID,
+		"last_id":  lastID,
+	})
+}
+
+func normalizeGeminiModelList(rawModels []map[string]any) []map[string]any {
+	normalizedModels := make([]map[string]any, 0, len(rawModels))
+	defaultMethods := []string{"generateContent"}
+	for _, model := range rawModels {
+		normalizedModel := cloneModelMap(model)
+		if name, ok := normalizedModel["name"].(string); ok && name != "" {
+			if !strings.HasPrefix(name, "models/") {
+				normalizedModel["name"] = "models/" + name
+			}
+			if displayName, _ := normalizedModel["displayName"].(string); displayName == "" {
+				normalizedModel["displayName"] = name
+			}
+			if description, _ := normalizedModel["description"].(string); description == "" {
+				normalizedModel["description"] = name
+			}
+		}
+		if _, ok := normalizedModel["supportedGenerationMethods"]; !ok {
+			normalizedModel["supportedGenerationMethods"] = defaultMethods
+		}
+		normalizedModels = append(normalizedModels, normalizedModel)
+	}
+	return normalizedModels
+}
+
+func modelAllowedBySet(model map[string]any, allowed map[string]struct{}) bool {
+	for _, candidate := range modelNameCandidates(model) {
+		if _, ok := allowed[normalizeClientModelName(candidate)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func modelNameCandidates(model map[string]any) []string {
+	if model == nil {
+		return nil
+	}
+	candidates := make([]string, 0, 3)
+	for _, key := range []string{"id", "name", "slug"} {
+		if value, ok := model[key].(string); ok && strings.TrimSpace(value) != "" {
+			candidates = append(candidates, value)
+		}
+	}
+	return candidates
+}
+
+func normalizeClientModelName(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.TrimPrefix(model, "models/")
+	return model
+}
+
+func cloneModelMaps(models []map[string]any) []map[string]any {
+	if len(models) == 0 {
+		return nil
+	}
+	cloned := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		cloned = append(cloned, cloneModelMap(model))
+	}
+	return cloned
+}
+
+func cloneModelMap(model map[string]any) map[string]any {
+	if model == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(model))
+	for k, v := range model {
+		cloned[k] = v
+	}
+	return cloned
 }
 
 func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {
@@ -1413,6 +1624,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
+	s.closeUserManagementStore()
 
 	log.Debug("API server stopped")
 	return nil
@@ -1442,8 +1654,126 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 	if s == nil || s.accessManager == nil || newCfg == nil {
 		return
 	}
+	s.applyUserManagementConfig(newCfg)
 	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
 		return
+	}
+}
+
+func (s *Server) applyUserManagementConfig(cfg *config.Config) {
+	if s == nil || cfg == nil {
+		useraccess.Register(nil, nil, false)
+		return
+	}
+	enabled := cfg.UserManagement.Enabled
+	if !enabled {
+		s.closeUserManagementStore()
+		useraccess.Register(nil, nil, false)
+		return
+	}
+	if cfg.UserManagement.Storage.Driver != "" && cfg.UserManagement.Storage.Driver != config.DefaultUserManagementStorage {
+		log.Errorf("user management storage driver %q is not supported", cfg.UserManagement.Storage.Driver)
+		s.closeUserManagementStore()
+		useraccess.Register(nil, nil, false)
+		return
+	}
+	dbPath, err := resolveUserManagementSQLitePath(cfg, s.configFilePath)
+	if err != nil {
+		log.Errorf("failed to resolve user management sqlite path: %v", err)
+		s.closeUserManagementStore()
+		useraccess.Register(nil, nil, false)
+		return
+	}
+
+	s.userManagementMu.RLock()
+	store := s.userStore
+	currentPath := s.userStorePath
+	s.userManagementMu.RUnlock()
+	if store != nil && currentPath == dbPath {
+		useraccess.Register(store, store, true)
+		registerUserUsageLedgerPlugin(store, cfg.UserManagement.Quota.MissingUsageCredits)
+		return
+	}
+
+	s.closeUserManagementStore()
+	store, err = usermanagement.OpenSQLiteStore(context.Background(), usermanagement.SQLiteConfig{Path: dbPath})
+	if err != nil {
+		log.Errorf("failed to open user management sqlite store: %v", err)
+		useraccess.Register(nil, nil, false)
+		return
+	}
+
+	s.userManagementMu.Lock()
+	s.userStore = store
+	s.userStorePath = dbPath
+	s.userModelPolicy = usermanagement.NewModelPolicyService(store)
+	s.userManagementMu.Unlock()
+	useraccess.Register(store, store, true)
+	registerUserUsageLedgerPlugin(store, cfg.UserManagement.Quota.MissingUsageCredits)
+	log.Infof("user management sqlite store initialized at %s", dbPath)
+}
+
+func (s *Server) closeUserManagementStore() {
+	if s == nil {
+		return
+	}
+	useraccess.Register(nil, nil, false)
+	unregisterUserUsageLedgerPlugin()
+	s.userManagementMu.Lock()
+	store := s.userStore
+	s.userStore = nil
+	s.userStorePath = ""
+	s.userModelPolicy = nil
+	s.userManagementMu.Unlock()
+	if store != nil {
+		if err := store.Close(); err != nil {
+			log.Errorf("failed to close user management sqlite store: %v", err)
+		}
+	}
+}
+
+func resolveUserManagementSQLitePath(cfg *config.Config, configFilePath string) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("config is nil")
+	}
+	path := strings.TrimSpace(cfg.UserManagement.Storage.Path)
+	if path == "" {
+		baseDir := strings.TrimSpace(filepath.Dir(configFilePath))
+		if baseDir == "" || baseDir == "." {
+			if wd, err := os.Getwd(); err == nil {
+				baseDir = wd
+			}
+		}
+		if baseDir == "" || baseDir == "." {
+			baseDir = os.TempDir()
+		}
+		path = filepath.Join(baseDir, "user-management.sqlite")
+	}
+	if strings.HasPrefix(path, "file:") || path == ":memory:" {
+		return path, nil
+	}
+	if !filepath.IsAbs(path) {
+		baseDir := strings.TrimSpace(filepath.Dir(configFilePath))
+		if baseDir == "" || baseDir == "." {
+			if wd, err := os.Getwd(); err == nil {
+				baseDir = wd
+			}
+		}
+		path = filepath.Join(baseDir, path)
+	}
+	return filepath.Abs(path)
+}
+
+func (s *Server) userModelPolicyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil {
+			c.Next()
+			return
+		}
+		s.userManagementMu.RLock()
+		policy := s.userModelPolicy
+		s.userManagementMu.RUnlock()
+		UserModelPolicyMiddleware(policy)(c)
 	}
 }
 

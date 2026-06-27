@@ -59,41 +59,61 @@ func ScrubProxyAndFingerprintHeaders(req *http.Request) {
 		return
 	}
 
-	// --- Proxy tracing headers ---
-	req.Header.Del("X-Forwarded-For")
-	req.Header.Del("X-Forwarded-Host")
-	req.Header.Del("X-Forwarded-Proto")
-	req.Header.Del("X-Forwarded-Port")
-	req.Header.Del("X-Real-IP")
-	req.Header.Del("Forwarded")
-	req.Header.Del("Via")
+	ScrubProxyTracingHeaders(req.Header)
+	ScrubDeviceFingerprintHeaders(req.Header)
+}
 
+// ScrubDeviceFingerprintHeaders removes headers that can reveal the downstream
+// client application, runtime, OS/arch, browser, or encoding fingerprint.
+func ScrubDeviceFingerprintHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
 	// --- Client identity headers ---
-	req.Header.Del("X-Title")
-	req.Header.Del("X-Stainless-Lang")
-	req.Header.Del("X-Stainless-Package-Version")
-	req.Header.Del("X-Stainless-Os")
-	req.Header.Del("X-Stainless-Arch")
-	req.Header.Del("X-Stainless-Runtime")
-	req.Header.Del("X-Stainless-Runtime-Version")
-	req.Header.Del("Http-Referer")
-	req.Header.Del("Referer")
+	headers.Del("X-Title")
+	headers.Del("X-Stainless-Lang")
+	headers.Del("X-Stainless-Package-Version")
+	headers.Del("X-Stainless-Os")
+	headers.Del("X-Stainless-Arch")
+	headers.Del("X-Stainless-Runtime")
+	headers.Del("X-Stainless-Runtime-Version")
+	headers.Del("Http-Referer")
+	headers.Del("Referer")
 
 	// --- Browser / Chromium fingerprint headers ---
 	// These are sent by Electron-based clients (e.g. CherryStudio) using the
 	// Fetch API, but NOT by Node.js https module (which Antigravity uses).
-	req.Header.Del("Sec-Ch-Ua")
-	req.Header.Del("Sec-Ch-Ua-Mobile")
-	req.Header.Del("Sec-Ch-Ua-Platform")
-	req.Header.Del("Sec-Fetch-Mode")
-	req.Header.Del("Sec-Fetch-Site")
-	req.Header.Del("Sec-Fetch-Dest")
-	req.Header.Del("Priority")
+	headers.Del("Sec-Ch-Ua")
+	headers.Del("Sec-Ch-Ua-Mobile")
+	headers.Del("Sec-Ch-Ua-Platform")
+	headers.Del("Sec-Fetch-Mode")
+	headers.Del("Sec-Fetch-Site")
+	headers.Del("Sec-Fetch-Dest")
+	headers.Del("Priority")
 
 	// --- Encoding negotiation ---
 	// Antigravity (Node.js) sends "gzip, deflate, br" by default;
 	// Electron-based clients may add "zstd" which is a fingerprint mismatch.
-	req.Header.Del("Accept-Encoding")
+	headers.Del("Accept-Encoding")
+}
+
+// ScrubProxyTracingHeaders removes hop-by-hop proxy tracing headers that can
+// reveal the downstream client's original network address to upstream services.
+func ScrubProxyTracingHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	headers.Del("X-Forwarded-For")
+	headers.Del("X-Forwarded-Host")
+	headers.Del("X-Forwarded-Proto")
+	headers.Del("X-Forwarded-Port")
+	headers.Del("X-Real-IP")
+	headers.Del("Forwarded")
+	headers.Del("Via")
+	headers.Del("CF-Connecting-IP")
+	headers.Del("True-Client-IP")
+	headers.Del("X-Client-IP")
+	headers.Del("Fastly-Client-IP")
 }
 
 // EnsureHeader ensures that a header exists in the target header map by checking

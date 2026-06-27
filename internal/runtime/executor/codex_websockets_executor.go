@@ -79,6 +79,19 @@ type codexWebsocketSession struct {
 
 	upstreamDisconnectOnce sync.Once
 	upstreamDisconnectCh   chan error
+
+	usageMu sync.Mutex
+	usage   codexTokenUsage
+
+	rateLimits []byte
+}
+
+type codexTokenUsage struct {
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
 }
 
 func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
@@ -584,6 +597,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 
 		var param any
+		seenTokenCountWithUsage := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -644,6 +658,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 			payload = normalizeCodexWebsocketCompletion(payload)
 			eventType := gjson.GetBytes(payload, "type").String()
+			if eventType == "token_count" {
+				seenTokenCountWithUsage = updateCodexSessionFromTokenCount(sess, payload) || seenTokenCountWithUsage
+			}
 			if eventType == "response.completed" || eventType == "response.done" {
 				if detail, ok := helps.ParseCodexUsage(payload); ok {
 					reporter.Publish(ctx, detail)
@@ -661,6 +678,20 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				}
 			}
 			if eventType == "response.completed" || eventType == "response.done" {
+				if !seenTokenCountWithUsage {
+					tokenCountPayload := buildCodexTokenCountPayloadFromCompleted(clientPayload, sess)
+					if len(tokenCountPayload) > 0 {
+						line = encodeCodexWebsocketAsSSE(tokenCountPayload)
+						chunks = sdktranslator.TranslateStream(ctx, to, from, req.Model, clientBody, clientBody, line, &param)
+						for i := range chunks {
+							if !send(cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
+								terminateReason = "context_done"
+								terminateErr = ctx.Err()
+								return
+							}
+						}
+					}
+				}
 				return
 			}
 		}
@@ -878,7 +909,16 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if isAPIKey {
 		ensureHeaderWithPriority(headers, ginHeaders, "User-Agent", "", "")
 	} else {
-		ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+		if config.DeviceMasqueradeEnabled(cfg) {
+			stableUserAgent := strings.TrimSpace(cfgUserAgent)
+			if stableUserAgent == "" {
+				stableUserAgent = codexUserAgent
+			}
+			headers.Set("User-Agent", stableUserAgent)
+			defer headers.Set("User-Agent", stableUserAgent)
+		} else {
+			ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+		}
 	}
 
 	betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
@@ -914,6 +954,9 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+	if config.IPMasqueradeEnabled(cfg) {
+		misc.ScrubProxyTracingHeaders(headers)
+	}
 
 	return headers
 }
@@ -1236,6 +1279,168 @@ func encodeCodexWebsocketAsSSE(payload []byte) []byte {
 	line = append(line, []byte("data: ")...)
 	line = append(line, payload...)
 	return line
+}
+
+func buildCodexTokenCountPayloadFromCompleted(payload []byte, sess *codexWebsocketSession) []byte {
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.completed" {
+		return nil
+	}
+	usageNode := gjson.GetBytes(payload, "response.usage")
+	lastUsage, ok := codexTokenUsageFromUsageNode(usageNode)
+	if !ok {
+		return nil
+	}
+
+	totalUsage := addCodexSessionUsage(sess, lastUsage)
+	out := []byte(`{"type":"token_count","info":{},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limit":null,"plan_type":null,"rate_limit_reached_type":null}}`)
+	var err error
+	out, err = sjson.SetRawBytes(out, "info.total_token_usage", codexTokenUsageJSON(totalUsage))
+	if err != nil {
+		return nil
+	}
+	out, err = sjson.SetRawBytes(out, "info.last_token_usage", codexTokenUsageJSON(lastUsage))
+	if err != nil {
+		return nil
+	}
+	if contextWindow := codexModelContextWindowFromPayload(payload); contextWindow > 0 {
+		out, err = sjson.SetBytes(out, "info.model_context_window", contextWindow)
+		if err != nil {
+			return nil
+		}
+	}
+	if rateLimits := codexRateLimitsFromPayload(payload); rateLimits.Exists() {
+		out, err = sjson.SetRawBytes(out, "rate_limits", []byte(rateLimits.Raw))
+		if err != nil {
+			return nil
+		}
+	} else if rateLimits := codexStoredRateLimits(sess); len(rateLimits) > 0 {
+		out, err = sjson.SetRawBytes(out, "rate_limits", rateLimits)
+		if err != nil {
+			return nil
+		}
+	}
+	return out
+}
+
+func codexTokenUsageFromUsageNode(usageNode gjson.Result) (codexTokenUsage, bool) {
+	if !usageNode.Exists() || !usageNode.IsObject() {
+		return codexTokenUsage{}, false
+	}
+	inputTokens := codexInt64FromFirst(usageNode, "input_tokens", "prompt_tokens")
+	outputTokens := codexInt64FromFirst(usageNode, "output_tokens", "completion_tokens")
+	totalTokens := codexInt64FromFirst(usageNode, "total_tokens")
+	cachedInputTokens := codexInt64FromFirst(usageNode, "input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens", "cached_input_tokens")
+	reasoningOutputTokens := codexInt64FromFirst(usageNode, "output_tokens_details.reasoning_tokens", "completion_tokens_details.reasoning_tokens", "reasoning_output_tokens")
+	if inputTokens == 0 && outputTokens == 0 && totalTokens == 0 && cachedInputTokens == 0 && reasoningOutputTokens == 0 {
+		return codexTokenUsage{}, false
+	}
+	if totalTokens == 0 {
+		totalTokens = inputTokens + outputTokens
+	}
+	return codexTokenUsage{
+		InputTokens:           inputTokens,
+		CachedInputTokens:     cachedInputTokens,
+		OutputTokens:          outputTokens,
+		ReasoningOutputTokens: reasoningOutputTokens,
+		TotalTokens:           totalTokens,
+	}, true
+}
+
+func codexInt64FromFirst(node gjson.Result, paths ...string) int64 {
+	for _, path := range paths {
+		value := node.Get(path)
+		if value.Exists() {
+			return value.Int()
+		}
+	}
+	return 0
+}
+
+func codexTokenUsageJSON(usage codexTokenUsage) []byte {
+	out := []byte(`{}`)
+	out, _ = sjson.SetBytes(out, "input_tokens", usage.InputTokens)
+	out, _ = sjson.SetBytes(out, "cached_input_tokens", usage.CachedInputTokens)
+	out, _ = sjson.SetBytes(out, "output_tokens", usage.OutputTokens)
+	out, _ = sjson.SetBytes(out, "reasoning_output_tokens", usage.ReasoningOutputTokens)
+	out, _ = sjson.SetBytes(out, "total_tokens", usage.TotalTokens)
+	return out
+}
+
+func addCodexSessionUsage(sess *codexWebsocketSession, usage codexTokenUsage) codexTokenUsage {
+	if sess == nil {
+		return usage
+	}
+	sess.usageMu.Lock()
+	defer sess.usageMu.Unlock()
+	sess.usage.InputTokens += usage.InputTokens
+	sess.usage.CachedInputTokens += usage.CachedInputTokens
+	sess.usage.OutputTokens += usage.OutputTokens
+	sess.usage.ReasoningOutputTokens += usage.ReasoningOutputTokens
+	sess.usage.TotalTokens += usage.TotalTokens
+	return sess.usage
+}
+
+func updateCodexSessionFromTokenCount(sess *codexWebsocketSession, payload []byte) bool {
+	totalUsage, hasUsage := codexTokenUsageFromTokenUsageNode(gjson.GetBytes(payload, "info.total_token_usage"))
+	rateLimits := codexRateLimitsFromPayload(payload)
+	if sess == nil {
+		return hasUsage
+	}
+	sess.usageMu.Lock()
+	if hasUsage {
+		sess.usage = totalUsage
+	}
+	if rateLimits.Exists() {
+		sess.rateLimits = bytes.Clone([]byte(rateLimits.Raw))
+	}
+	sess.usageMu.Unlock()
+	return hasUsage
+}
+
+func codexTokenUsageFromTokenUsageNode(node gjson.Result) (codexTokenUsage, bool) {
+	if !node.Exists() || !node.IsObject() {
+		return codexTokenUsage{}, false
+	}
+	usage := codexTokenUsage{
+		InputTokens:           node.Get("input_tokens").Int(),
+		CachedInputTokens:     node.Get("cached_input_tokens").Int(),
+		OutputTokens:          node.Get("output_tokens").Int(),
+		ReasoningOutputTokens: node.Get("reasoning_output_tokens").Int(),
+		TotalTokens:           node.Get("total_tokens").Int(),
+	}
+	if usage.InputTokens == 0 && usage.CachedInputTokens == 0 && usage.OutputTokens == 0 && usage.ReasoningOutputTokens == 0 && usage.TotalTokens == 0 {
+		return codexTokenUsage{}, false
+	}
+	return usage, true
+}
+
+func codexModelContextWindowFromPayload(payload []byte) int64 {
+	for _, path := range []string{"model_context_window", "response.model_context_window", "response.max_context_window"} {
+		value := gjson.GetBytes(payload, path)
+		if value.Exists() && value.Int() > 0 {
+			return value.Int()
+		}
+	}
+	return 0
+}
+
+func codexRateLimitsFromPayload(payload []byte) gjson.Result {
+	for _, path := range []string{"rate_limits", "response.rate_limits"} {
+		value := gjson.GetBytes(payload, path)
+		if value.Exists() {
+			return value
+		}
+	}
+	return gjson.Result{}
+}
+
+func codexStoredRateLimits(sess *codexWebsocketSession) []byte {
+	if sess == nil {
+		return nil
+	}
+	sess.usageMu.Lock()
+	defer sess.usageMu.Unlock()
+	return bytes.Clone(sess.rateLimits)
 }
 
 func websocketUpgradeRequestLog(info helps.UpstreamRequestLog) helps.UpstreamRequestLog {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -149,6 +150,9 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: wsReq.Headers}, attrs)
+	if config.IPMasqueradeEnabled(e.cfg) {
+		misc.ScrubProxyTracingHeaders(wsReq.Headers)
+	}
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -217,6 +221,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: wsReq.Headers}, attrs)
+	if config.IPMasqueradeEnabled(e.cfg) {
+		misc.ScrubProxyTracingHeaders(wsReq.Headers)
+	}
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID

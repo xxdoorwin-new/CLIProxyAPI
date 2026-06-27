@@ -23,6 +23,8 @@ const (
 	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 	DefaultPprofAddr             = "127.0.0.1:8316"
 	DefaultAuthDir               = "~/.cli-proxy-api"
+	DefaultUserManagementStorage = "sqlite"
+	DefaultUserQuotaPeriod       = "monthly"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -42,6 +44,9 @@ type Config struct {
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// UserManagement configures tenant-facing registration, user API keys, and quota management.
+	UserManagement UserManagementConfig `yaml:"user-management" json:"user-management"`
 
 	// Plugins configures dynamic plugin discovery and per-plugin settings.
 	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
@@ -97,6 +102,9 @@ type Config struct {
 
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
+
+	// Privacy controls optional upstream identity masquerading.
+	Privacy PrivacyConfig `yaml:"privacy" json:"privacy"`
 
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
@@ -264,6 +272,20 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 }
 
+// PrivacyConfig controls optional upstream identity masquerading behavior.
+type PrivacyConfig struct {
+	IPMasquerade     bool `yaml:"ip-masquerade" json:"ip-masquerade"`
+	DeviceMasquerade bool `yaml:"device-masquerade" json:"device-masquerade"`
+}
+
+func IPMasqueradeEnabled(cfg *Config) bool {
+	return cfg != nil && cfg.Privacy.IPMasquerade
+}
+
+func DeviceMasqueradeEnabled(cfg *Config) bool {
+	return cfg != nil && cfg.Privacy.DeviceMasquerade
+}
+
 // TLSConfig holds HTTPS server settings.
 type TLSConfig struct {
 	// Enable toggles HTTPS server mode.
@@ -296,6 +318,50 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+}
+
+// UserManagementConfig controls tenant-facing users, sessions, user API keys, and quota enforcement.
+type UserManagementConfig struct {
+	// Enabled toggles user registration, user-owned API keys, quota ledger, and role-aware portal behavior.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Registration controls public self-service registration.
+	Registration UserRegistrationConfig `yaml:"registration" json:"registration"`
+	// Storage controls the durable user-domain database.
+	Storage UserManagementStorageConfig `yaml:"storage" json:"storage"`
+	// Sessions controls management UI user session behavior.
+	Sessions UserSessionConfig `yaml:"sessions" json:"sessions"`
+	// Quota controls default user quota behavior.
+	Quota UserQuotaConfig `yaml:"quota" json:"quota"`
+}
+
+// UserRegistrationConfig controls public account creation.
+type UserRegistrationConfig struct {
+	// Enabled allows unauthenticated visitors to create pending user accounts.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// UserManagementStorageConfig controls the durable user management store.
+type UserManagementStorageConfig struct {
+	// Driver selects the store implementation. The initial implementation uses sqlite.
+	Driver string `yaml:"driver" json:"driver"`
+	// Path is the SQLite database path. Empty uses the application writable data directory.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+}
+
+// UserSessionConfig controls user portal sessions.
+type UserSessionConfig struct {
+	// TTL is the session lifetime as a Go duration string. Empty uses the service default.
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+}
+
+// UserQuotaConfig controls credit-based tenant quotas.
+type UserQuotaConfig struct {
+	// DefaultPeriod is the default quota reset period for new users.
+	DefaultPeriod string `yaml:"default-period" json:"default-period"`
+	// DefaultMonthlyCredits is the default monthly credit limit for newly approved users. Zero means no default quota.
+	DefaultMonthlyCredits int64 `yaml:"default-monthly-credits" json:"default-monthly-credits"`
+	// MissingUsageCredits is charged when a routed request completes without token usage metadata.
+	MissingUsageCredits int64 `yaml:"missing-usage-credits" json:"missing-usage-credits"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -713,6 +779,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{}
+				cfg.NormalizeUserManagementConfig()
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
 			}
@@ -723,6 +790,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
 		cfg := &Config{}
+		cfg.NormalizeUserManagementConfig()
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
 	}
@@ -746,6 +814,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{}
+			cfgOptional.NormalizeUserManagementConfig()
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
 		}
@@ -786,6 +855,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
+	cfg.NormalizeUserManagementConfig()
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -873,6 +943,29 @@ func (cfg *Config) NormalizePluginsConfig() {
 	}
 	if cfg.Plugins.Configs == nil {
 		cfg.Plugins.Configs = map[string]PluginInstanceConfig{}
+	}
+}
+
+// NormalizeUserManagementConfig applies defaults and sanitization for user-management settings.
+func (cfg *Config) NormalizeUserManagementConfig() {
+	if cfg == nil {
+		return
+	}
+	cfg.UserManagement.Storage.Driver = strings.ToLower(strings.TrimSpace(cfg.UserManagement.Storage.Driver))
+	if cfg.UserManagement.Storage.Driver == "" {
+		cfg.UserManagement.Storage.Driver = DefaultUserManagementStorage
+	}
+	cfg.UserManagement.Storage.Path = strings.TrimSpace(cfg.UserManagement.Storage.Path)
+	cfg.UserManagement.Sessions.TTL = strings.TrimSpace(cfg.UserManagement.Sessions.TTL)
+	cfg.UserManagement.Quota.DefaultPeriod = strings.ToLower(strings.TrimSpace(cfg.UserManagement.Quota.DefaultPeriod))
+	if cfg.UserManagement.Quota.DefaultPeriod == "" {
+		cfg.UserManagement.Quota.DefaultPeriod = DefaultUserQuotaPeriod
+	}
+	if cfg.UserManagement.Quota.DefaultMonthlyCredits < 0 {
+		cfg.UserManagement.Quota.DefaultMonthlyCredits = 0
+	}
+	if cfg.UserManagement.Quota.MissingUsageCredits < 0 {
+		cfg.UserManagement.Quota.MissingUsageCredits = 0
 	}
 }
 
@@ -1500,6 +1593,10 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == "plugins"
 		case "routing.strategy":
 			return node.Value == "round-robin"
+		case "user-management.storage.driver":
+			return node.Value == DefaultUserManagementStorage
+		case "user-management.quota.default-period":
+			return node.Value == DefaultUserQuotaPeriod
 		}
 	}
 
