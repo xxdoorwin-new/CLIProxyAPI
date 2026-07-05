@@ -36,6 +36,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usermanagement"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -426,7 +427,7 @@ func (s *Server) setupRoutes() {
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
+	v1.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware(), s.userQuotaMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -447,7 +448,7 @@ func (s *Server) setupRoutes() {
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
+	codexDirect.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware(), s.userQuotaMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -456,7 +457,7 @@ func (s *Server) setupRoutes() {
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware())
+	v1beta.Use(AuthMiddleware(s.accessManager), s.userModelPolicyMiddleware(), s.userQuotaMiddleware())
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -637,6 +638,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
+		mgmt.GET("/models", s.handleManagementModels)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
@@ -652,6 +654,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage-queue", s.mgmt.GetUsageQueue)
+		mgmt.GET("/user-management/settings", s.handleAdminGetUserManagementSettings)
+		mgmt.PATCH("/user-management/settings", s.handleAdminPatchUserManagementSettings)
+		mgmt.POST("/bootstrap", s.handleAdminBootstrap)
 		mgmt.GET("/users", s.handleAdminListUsers)
 		mgmt.GET("/users/pending", s.handleAdminListPendingUsers)
 		mgmt.GET("/users/:id", s.handleAdminGetUser)
@@ -659,18 +664,21 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/users/:id/reject", s.handleAdminRejectUser)
 		mgmt.POST("/users/:id/suspend", s.handleAdminSuspendUser)
 		mgmt.POST("/users/:id/reactivate", s.handleAdminReactivateUser)
+		mgmt.GET("/configured-api-keys", s.handleAdminListConfiguredAPIKeys)
 		mgmt.GET("/users/:id/api-keys", s.handleAdminListUserAPIKeys)
-		mgmt.POST("/users/:id/api-keys", s.handleAdminCreateUserAPIKey)
+		mgmt.POST("/users/:id/api-keys", s.handleAdminBindUserAPIKey)
 		mgmt.PATCH("/users/:id/api-keys/:key_id", s.handleAdminRenameUserAPIKey)
 		mgmt.POST("/users/:id/api-keys/:key_id/disable", s.handleAdminDisableUserAPIKey)
-		mgmt.POST("/users/:id/api-keys/:key_id/revoke", s.handleAdminRevokeUserAPIKey)
-		mgmt.POST("/users/:id/api-keys/:key_id/rotate", s.handleAdminRotateUserAPIKey)
+		mgmt.POST("/users/:id/api-keys/:key_id/enable", s.handleAdminEnableUserAPIKey)
+		mgmt.DELETE("/users/:id/api-keys/:key_id", s.handleAdminUnbindUserAPIKey)
 		mgmt.GET("/users/:id/model-policy", s.handleAdminGetUserModelPolicy)
 		mgmt.PUT("/users/:id/model-policy", s.handleAdminSetUserModelPolicy)
 		mgmt.GET("/users/:id/api-keys/:key_id/model-policy", s.handleAdminGetAPIKeyModelPolicy)
 		mgmt.PUT("/users/:id/api-keys/:key_id/model-policy", s.handleAdminSetAPIKeyModelPolicy)
 		mgmt.GET("/users/:id/quota-policy", s.handleAdminGetUserQuotaPolicy)
 		mgmt.PUT("/users/:id/quota-policy", s.handleAdminSetUserQuotaPolicy)
+		mgmt.GET("/users/:id/quota-summary", s.handleAdminGetUserQuotaSummary)
+		mgmt.GET("/users/:id/usage", s.handleAdminGetUserUsage)
 		mgmt.GET("/pricing-rules", s.handleAdminListPricingRules)
 		mgmt.PUT("/pricing-rules", s.handleAdminSetPricingRule)
 		mgmt.DELETE("/pricing-rules", s.handleAdminDeletePricingRule)
@@ -780,6 +788,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
+}
+
+func (s *Server) handleManagementModels(c *gin.Context) {
+	models := registry.GetGlobalRegistry().GetAvailableModels("openai")
+	writeOpenAIModels(c, models)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
@@ -1239,7 +1252,7 @@ func (s *Server) filterModelListForUser(c *gin.Context, models []map[string]any)
 		log.Errorf("failed to resolve user model policy: %v", err)
 		return []map[string]any{}, true
 	}
-	if resolved.AllowAll {
+	if resolved.AllowAll || len(resolved.Models) == 0 {
 		return cloneModelMaps(models), true
 	}
 	allowed := make(map[string]struct{}, len(resolved.Models))
@@ -1662,26 +1675,26 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 
 func (s *Server) applyUserManagementConfig(cfg *config.Config) {
 	if s == nil || cfg == nil {
-		useraccess.Register(nil, nil, false)
+		useraccess.Register(nil, nil, nil, false)
 		return
 	}
 	enabled := cfg.UserManagement.Enabled
 	if !enabled {
 		s.closeUserManagementStore()
-		useraccess.Register(nil, nil, false)
+		useraccess.Register(nil, nil, nil, false)
 		return
 	}
 	if cfg.UserManagement.Storage.Driver != "" && cfg.UserManagement.Storage.Driver != config.DefaultUserManagementStorage {
 		log.Errorf("user management storage driver %q is not supported", cfg.UserManagement.Storage.Driver)
 		s.closeUserManagementStore()
-		useraccess.Register(nil, nil, false)
+		useraccess.Register(nil, nil, nil, false)
 		return
 	}
 	dbPath, err := resolveUserManagementSQLitePath(cfg, s.configFilePath)
 	if err != nil {
 		log.Errorf("failed to resolve user management sqlite path: %v", err)
 		s.closeUserManagementStore()
-		useraccess.Register(nil, nil, false)
+		useraccess.Register(nil, nil, nil, false)
 		return
 	}
 
@@ -1690,7 +1703,7 @@ func (s *Server) applyUserManagementConfig(cfg *config.Config) {
 	currentPath := s.userStorePath
 	s.userManagementMu.RUnlock()
 	if store != nil && currentPath == dbPath {
-		useraccess.Register(store, store, true)
+		useraccess.Register(store, store, cfg.APIKeys, true)
 		registerUserUsageLedgerPlugin(store, cfg.UserManagement.Quota.MissingUsageCredits)
 		return
 	}
@@ -1699,7 +1712,7 @@ func (s *Server) applyUserManagementConfig(cfg *config.Config) {
 	store, err = usermanagement.OpenSQLiteStore(context.Background(), usermanagement.SQLiteConfig{Path: dbPath})
 	if err != nil {
 		log.Errorf("failed to open user management sqlite store: %v", err)
-		useraccess.Register(nil, nil, false)
+		useraccess.Register(nil, nil, nil, false)
 		return
 	}
 
@@ -1708,7 +1721,7 @@ func (s *Server) applyUserManagementConfig(cfg *config.Config) {
 	s.userStorePath = dbPath
 	s.userModelPolicy = usermanagement.NewModelPolicyService(store)
 	s.userManagementMu.Unlock()
-	useraccess.Register(store, store, true)
+	useraccess.Register(store, store, cfg.APIKeys, true)
 	registerUserUsageLedgerPlugin(store, cfg.UserManagement.Quota.MissingUsageCredits)
 	log.Infof("user management sqlite store initialized at %s", dbPath)
 }
@@ -1717,7 +1730,7 @@ func (s *Server) closeUserManagementStore() {
 	if s == nil {
 		return
 	}
-	useraccess.Register(nil, nil, false)
+	useraccess.Register(nil, nil, nil, false)
 	unregisterUserUsageLedgerPlugin()
 	s.userManagementMu.Lock()
 	store := s.userStore
@@ -1774,6 +1787,23 @@ func (s *Server) userModelPolicyMiddleware() gin.HandlerFunc {
 		policy := s.userModelPolicy
 		s.userManagementMu.RUnlock()
 		UserModelPolicyMiddleware(policy)(c)
+	}
+}
+
+func (s *Server) userQuotaMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil {
+			c.Next()
+			return
+		}
+		s.userManagementMu.RLock()
+		store := s.userStore
+		s.userManagementMu.RUnlock()
+		if store == nil {
+			c.Next()
+			return
+		}
+		UserQuotaMiddleware(usermanagement.NewQuotaService(store, store))(c)
 	}
 }
 

@@ -13,18 +13,23 @@ func TestProviderAuthenticatesActiveUserAPIKey(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	user := createApprovedUser(t, ctx, store)
-	keyService := usermanagement.NewUserAPIKeyService(store, store)
-	credential, err := keyService.CreateKey(ctx, usermanagement.CreateUserAPIKeyRequest{UserID: user.ID, Name: "default"})
+	configuredKey := "configured-provider-key"
+	keyService := usermanagement.NewUserAPIKeyService(store, store, []string{configuredKey})
+	key, err := keyService.BindKey(ctx, usermanagement.BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: usermanagement.ConfiguredAPIKeyFingerprintHex(configuredKey),
+	})
 	if err != nil {
-		t.Fatalf("CreateKey() error = %v", err)
+		t.Fatalf("BindKey() error = %v", err)
 	}
 
-	provider := NewProvider(store, store)
+	provider := NewProvider(store, store, []string{configuredKey})
 	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+credential.Plaintext)
+	req.Header.Set("Authorization", "Bearer "+configuredKey)
 
 	result, authErr := provider.Authenticate(ctx, req)
 	if authErr != nil {
@@ -36,15 +41,15 @@ func TestProviderAuthenticatesActiveUserAPIKey(t *testing.T) {
 	if result.Principal != string(user.ID) {
 		t.Fatalf("Principal = %q, want user id %q", result.Principal, user.ID)
 	}
-	if result.Metadata["api_key_id"] != string(credential.APIKey.ID) {
-		t.Fatalf("api_key_id metadata = %q, want %q", result.Metadata["api_key_id"], credential.APIKey.ID)
+	if result.Metadata["api_key_id"] != string(key.ID) {
+		t.Fatalf("api_key_id metadata = %q, want %q", result.Metadata["api_key_id"], key.ID)
 	}
 }
 
 func TestProviderRejectsUnknownUserAPIKey(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	provider := NewProvider(store, store)
+	provider := NewProvider(store, store, []string{"known-configured-key"})
 	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -57,26 +62,31 @@ func TestProviderRejectsUnknownUserAPIKey(t *testing.T) {
 	}
 }
 
-func TestProviderRejectsRevokedUserAPIKey(t *testing.T) {
+func TestProviderRejectsDisabledUserAPIKeyBinding(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	user := createApprovedUser(t, ctx, store)
-	keyService := usermanagement.NewUserAPIKeyService(store, store)
-	credential, err := keyService.CreateKey(ctx, usermanagement.CreateUserAPIKeyRequest{UserID: user.ID, Name: "default"})
+	configuredKey := "configured-disabled-key"
+	keyService := usermanagement.NewUserAPIKeyService(store, store, []string{configuredKey})
+	key, err := keyService.BindKey(ctx, usermanagement.BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: usermanagement.ConfiguredAPIKeyFingerprintHex(configuredKey),
+	})
 	if err != nil {
-		t.Fatalf("CreateKey() error = %v", err)
+		t.Fatalf("BindKey() error = %v", err)
 	}
-	if _, err = keyService.RevokeKey(ctx, credential.APIKey.ID); err != nil {
-		t.Fatalf("RevokeKey() error = %v", err)
+	if _, err = keyService.DisableKey(ctx, key.ID); err != nil {
+		t.Fatalf("DisableKey() error = %v", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+credential.Plaintext)
+	req.Header.Set("Authorization", "Bearer "+configuredKey)
 
-	_, authErr := NewProvider(store, store).Authenticate(ctx, req)
+	_, authErr := NewProvider(store, store, []string{configuredKey}).Authenticate(ctx, req)
 	if authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeInvalidCredential {
 		t.Fatalf("Authenticate() error = %v, want invalid credential", authErr)
 	}
@@ -86,10 +96,15 @@ func TestProviderRejectsSuspendedOwner(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	user := createApprovedUser(t, ctx, store)
-	keyService := usermanagement.NewUserAPIKeyService(store, store)
-	credential, err := keyService.CreateKey(ctx, usermanagement.CreateUserAPIKeyRequest{UserID: user.ID, Name: "default"})
+	configuredKey := "configured-suspended-key"
+	keyService := usermanagement.NewUserAPIKeyService(store, store, []string{configuredKey})
+	_, err := keyService.BindKey(ctx, usermanagement.BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: usermanagement.ConfiguredAPIKeyFingerprintHex(configuredKey),
+	})
 	if err != nil {
-		t.Fatalf("CreateKey() error = %v", err)
+		t.Fatalf("BindKey() error = %v", err)
 	}
 	lifecycle := usermanagement.NewUserLifecycleService(store, store)
 	if _, err = lifecycle.SuspendUser(ctx, user.ID); err != nil {
@@ -100,9 +115,9 @@ func TestProviderRejectsSuspendedOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+credential.Plaintext)
+	req.Header.Set("Authorization", "Bearer "+configuredKey)
 
-	_, authErr := NewProvider(store, store).Authenticate(ctx, req)
+	_, authErr := NewProvider(store, store, []string{configuredKey}).Authenticate(ctx, req)
 	if authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeInvalidCredential {
 		t.Fatalf("Authenticate() error = %v, want invalid credential", authErr)
 	}
@@ -111,7 +126,7 @@ func TestProviderRejectsSuspendedOwner(t *testing.T) {
 func TestProviderReportsMissingCredentials(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	provider := NewProvider(store, store)
+	provider := NewProvider(store, store, nil)
 	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -120,6 +135,50 @@ func TestProviderReportsMissingCredentials(t *testing.T) {
 	_, authErr := provider.Authenticate(ctx, req)
 	if authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeNoCredentials {
 		t.Fatalf("Authenticate() error = %v, want no credentials", authErr)
+	}
+}
+
+func TestProviderRejectsUnboundConfiguredAPIKey(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	configuredKey := "configured-but-unbound"
+	provider := NewProvider(store, store, []string{configuredKey})
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+configuredKey)
+
+	_, authErr := provider.Authenticate(ctx, req)
+	if authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeInvalidCredential {
+		t.Fatalf("Authenticate() error = %v, want invalid credential", authErr)
+	}
+}
+
+func TestProviderRejectsMissingConfiguredAPIKey(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	user := createApprovedUser(t, ctx, store)
+	configuredKey := "configured-then-removed"
+	keyService := usermanagement.NewUserAPIKeyService(store, store, []string{configuredKey})
+	if _, err := keyService.BindKey(ctx, usermanagement.BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: usermanagement.ConfiguredAPIKeyFingerprintHex(configuredKey),
+	}); err != nil {
+		t.Fatalf("BindKey() error = %v", err)
+	}
+
+	provider := NewProvider(store, store, []string{"other-configured-key"})
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+configuredKey)
+
+	_, authErr := provider.Authenticate(ctx, req)
+	if authErr == nil || authErr.Code != sdkaccess.AuthErrorCodeInvalidCredential {
+		t.Fatalf("Authenticate() error = %v, want invalid credential", authErr)
 	}
 }
 

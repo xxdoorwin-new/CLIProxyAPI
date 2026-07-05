@@ -202,14 +202,14 @@ func (s *Server) handleUserAPIKeys(c *gin.Context) {
 	if !ok {
 		return
 	}
-	keys, err := usermanagement.NewUserAPIKeyService(store, store).ListKeyMetadataByUser(c.Request.Context(), principal.UserID)
+	keys, err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).ListKeyMetadataByUser(c.Request.Context(), principal.UserID)
 	if err != nil {
 		writeUserManagementError(c, err)
 		return
 	}
 	out := make([]userAPIKeyResponse, 0, len(keys))
 	for i := range keys {
-		out = append(out, toAPIKeyMetadataResponse(keys[i], ""))
+		out = append(out, toAPIKeyMetadataResponse(keys[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"api_keys": out})
 }

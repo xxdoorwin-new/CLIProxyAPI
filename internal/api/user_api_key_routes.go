@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,16 +9,46 @@ import (
 )
 
 type userAPIKeyResponse struct {
-	ID         string     `json:"id"`
-	UserID     string     `json:"user_id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	Plaintext  string     `json:"plaintext,omitempty"`
+	ID                       string     `json:"id"`
+	UserID                   string     `json:"user_id"`
+	Name                     string     `json:"name"`
+	Prefix                   string     `json:"prefix"`
+	Status                   string     `json:"status"`
+	ConfiguredKeyFingerprint string     `json:"configured_key_fingerprint"`
+	ConfiguredKeyPresent     bool       `json:"configured_key_present"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+	ExpiresAt                *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt               *time.Time `json:"last_used_at,omitempty"`
+}
+
+type configuredAPIKeyResponse struct {
+	Fingerprint       string     `json:"fingerprint"`
+	Prefix            string     `json:"prefix"`
+	Assigned          bool       `json:"assigned"`
+	AssignedUserID    string     `json:"assigned_user_id,omitempty"`
+	AssignedKeyID     string     `json:"assigned_key_id,omitempty"`
+	AssignedKeyName   string     `json:"assigned_key_name,omitempty"`
+	AssignedStatus    string     `json:"assigned_status,omitempty"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
+	ConfiguredPresent bool       `json:"configured_present"`
+}
+
+func (s *Server) handleAdminListConfiguredAPIKeys(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	selections, err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).ListConfiguredAPIKeys(c.Request.Context())
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	out := make([]configuredAPIKeyResponse, 0, len(selections))
+	for i := range selections {
+		out = append(out, toConfiguredAPIKeyResponse(selections[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"api_keys": out})
 }
 
 func (s *Server) handleAdminListUserAPIKeys(c *gin.Context) {
@@ -27,41 +56,43 @@ func (s *Server) handleAdminListUserAPIKeys(c *gin.Context) {
 	if !ok {
 		return
 	}
-	keys, err := usermanagement.NewUserAPIKeyService(store, store).ListKeyMetadataByUser(c.Request.Context(), usermanagement.UserID(c.Param("id")))
+	keys, err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).ListKeyMetadataByUser(c.Request.Context(), usermanagement.UserID(c.Param("id")))
 	if err != nil {
 		writeUserManagementError(c, err)
 		return
 	}
 	out := make([]userAPIKeyResponse, 0, len(keys))
 	for i := range keys {
-		out = append(out, toAPIKeyMetadataResponse(keys[i], ""))
+		out = append(out, toAPIKeyMetadataResponse(keys[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"api_keys": out})
 }
 
-func (s *Server) handleAdminCreateUserAPIKey(c *gin.Context) {
+func (s *Server) handleAdminBindUserAPIKey(c *gin.Context) {
 	store, ok := s.currentUserStore(c)
 	if !ok {
 		return
 	}
 	var body struct {
-		Name      string     `json:"name"`
-		ExpiresAt *time.Time `json:"expires_at"`
+		Name                     string     `json:"name"`
+		ConfiguredKeyFingerprint string     `json:"configured_key_fingerprint"`
+		ExpiresAt                *time.Time `json:"expires_at"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	credential, err := usermanagement.NewUserAPIKeyService(store, store).CreateKey(c.Request.Context(), usermanagement.CreateUserAPIKeyRequest{
-		UserID:    usermanagement.UserID(c.Param("id")),
-		Name:      body.Name,
-		ExpiresAt: body.ExpiresAt,
+	key, err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).BindKey(c.Request.Context(), usermanagement.BindUserAPIKeyRequest{
+		UserID:                   usermanagement.UserID(c.Param("id")),
+		Name:                     body.Name,
+		ConfiguredKeyFingerprint: body.ConfiguredKeyFingerprint,
+		ExpiresAt:                body.ExpiresAt,
 	})
 	if err != nil {
 		writeUserManagementError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"api_key": toAPIKeyResponse(credential.APIKey, credential.Plaintext)})
+	c.JSON(http.StatusCreated, gin.H{"api_key": toAPIKeyResponse(key)})
 }
 
 func (s *Server) handleAdminRenameUserAPIKey(c *gin.Context) {
@@ -79,39 +110,27 @@ func (s *Server) handleAdminRenameUserAPIKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	key, err := usermanagement.NewUserAPIKeyService(store, store).RenameKey(c.Request.Context(), usermanagement.APIKeyID(c.Param("key_id")), body.Name)
+	key, err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).RenameKey(c.Request.Context(), usermanagement.APIKeyID(c.Param("key_id")), body.Name)
 	if err != nil {
 		writeUserManagementError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"api_key": toAPIKeyResponse(key, "")})
+	c.JSON(http.StatusOK, gin.H{"api_key": toAPIKeyResponse(key)})
 }
 
 func (s *Server) handleAdminDisableUserAPIKey(c *gin.Context) {
-	s.handleAdminUserAPIKeyAction(c, func(service *usermanagement.UserAPIKeyService, keyID usermanagement.APIKeyID) (*usermanagement.UserAPIKeyCredential, *usermanagement.APIKey, error) {
-		key, err := service.DisableKey(c.Request.Context(), keyID)
-		return nil, key, err
+	s.handleAdminUserAPIKeyAction(c, func(service *usermanagement.UserAPIKeyService, keyID usermanagement.APIKeyID) (*usermanagement.APIKey, error) {
+		return service.DisableKey(c.Request.Context(), keyID)
 	})
 }
 
-func (s *Server) handleAdminRevokeUserAPIKey(c *gin.Context) {
-	s.handleAdminUserAPIKeyAction(c, func(service *usermanagement.UserAPIKeyService, keyID usermanagement.APIKeyID) (*usermanagement.UserAPIKeyCredential, *usermanagement.APIKey, error) {
-		key, err := service.RevokeKey(c.Request.Context(), keyID)
-		return nil, key, err
+func (s *Server) handleAdminEnableUserAPIKey(c *gin.Context) {
+	s.handleAdminUserAPIKeyAction(c, func(service *usermanagement.UserAPIKeyService, keyID usermanagement.APIKeyID) (*usermanagement.APIKey, error) {
+		return service.EnableKey(c.Request.Context(), keyID)
 	})
 }
 
-func (s *Server) handleAdminRotateUserAPIKey(c *gin.Context) {
-	s.handleAdminUserAPIKeyAction(c, func(service *usermanagement.UserAPIKeyService, keyID usermanagement.APIKeyID) (*usermanagement.UserAPIKeyCredential, *usermanagement.APIKey, error) {
-		credential, err := service.RotateKey(c.Request.Context(), keyID)
-		if credential == nil {
-			return nil, nil, err
-		}
-		return credential, credential.APIKey, err
-	})
-}
-
-func (s *Server) handleAdminUserAPIKeyAction(c *gin.Context, action func(*usermanagement.UserAPIKeyService, usermanagement.APIKeyID) (*usermanagement.UserAPIKeyCredential, *usermanagement.APIKey, error)) {
+func (s *Server) handleAdminUnbindUserAPIKey(c *gin.Context) {
 	store, ok := s.currentUserStore(c)
 	if !ok {
 		return
@@ -119,16 +138,27 @@ func (s *Server) handleAdminUserAPIKeyAction(c *gin.Context, action func(*userma
 	if !s.ensureUserAPIKeyOwner(c, store) {
 		return
 	}
-	credential, key, err := action(usermanagement.NewUserAPIKeyService(store, store), usermanagement.APIKeyID(c.Param("key_id")))
+	if err := usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()).UnbindKey(c.Request.Context(), usermanagement.APIKeyID(c.Param("key_id"))); err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *Server) handleAdminUserAPIKeyAction(c *gin.Context, action func(*usermanagement.UserAPIKeyService, usermanagement.APIKeyID) (*usermanagement.APIKey, error)) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	if !s.ensureUserAPIKeyOwner(c, store) {
+		return
+	}
+	key, err := action(usermanagement.NewUserAPIKeyService(store, store, s.configuredAPIKeys()), usermanagement.APIKeyID(c.Param("key_id")))
 	if err != nil {
 		writeUserManagementError(c, err)
 		return
 	}
-	plaintext := ""
-	if credential != nil {
-		plaintext = credential.Plaintext
-	}
-	c.JSON(http.StatusOK, gin.H{"api_key": toAPIKeyResponse(key, plaintext)})
+	c.JSON(http.StatusOK, gin.H{"api_key": toAPIKeyResponse(key)})
 }
 
 func (s *Server) ensureUserAPIKeyOwner(c *gin.Context, store *usermanagement.SQLiteStore) bool {
@@ -144,35 +174,58 @@ func (s *Server) ensureUserAPIKeyOwner(c *gin.Context, store *usermanagement.SQL
 	return true
 }
 
-func toAPIKeyResponse(key *usermanagement.APIKey, plaintext string) userAPIKeyResponse {
+func (s *Server) configuredAPIKeys() []string {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return append([]string(nil), s.cfg.APIKeys...)
+}
+
+func toAPIKeyResponse(key *usermanagement.APIKey) userAPIKeyResponse {
 	if key == nil {
 		return userAPIKeyResponse{}
 	}
 	return userAPIKeyResponse{
-		ID:         string(key.ID),
-		UserID:     string(key.UserID),
-		Name:       key.Name,
-		Prefix:     key.Prefix,
-		Status:     string(key.Status),
-		CreatedAt:  key.CreatedAt,
-		UpdatedAt:  key.UpdatedAt,
-		ExpiresAt:  key.ExpiresAt,
-		LastUsedAt: key.LastUsedAt,
-		Plaintext:  strings.TrimSpace(plaintext),
+		ID:                       string(key.ID),
+		UserID:                   string(key.UserID),
+		Name:                     key.Name,
+		Prefix:                   key.Prefix,
+		Status:                   string(key.Status),
+		ConfiguredKeyFingerprint: usermanagement.EncodeAPIKeyFingerprint(key.KeyHash),
+		ConfiguredKeyPresent:     false,
+		CreatedAt:                key.CreatedAt,
+		UpdatedAt:                key.UpdatedAt,
+		ExpiresAt:                key.ExpiresAt,
+		LastUsedAt:               key.LastUsedAt,
 	}
 }
 
-func toAPIKeyMetadataResponse(key usermanagement.APIKeyMetadata, plaintext string) userAPIKeyResponse {
+func toAPIKeyMetadataResponse(key usermanagement.APIKeyMetadata) userAPIKeyResponse {
 	return userAPIKeyResponse{
-		ID:         string(key.ID),
-		UserID:     string(key.UserID),
-		Name:       key.Name,
-		Prefix:     key.Prefix,
-		Status:     string(key.Status),
-		CreatedAt:  key.CreatedAt,
-		UpdatedAt:  key.UpdatedAt,
-		ExpiresAt:  key.ExpiresAt,
-		LastUsedAt: key.LastUsedAt,
-		Plaintext:  strings.TrimSpace(plaintext),
+		ID:                       string(key.ID),
+		UserID:                   string(key.UserID),
+		Name:                     key.Name,
+		Prefix:                   key.Prefix,
+		Status:                   string(key.Status),
+		ConfiguredKeyFingerprint: key.ConfiguredKeyFingerprint,
+		ConfiguredKeyPresent:     key.ConfiguredKeyPresent,
+		CreatedAt:                key.CreatedAt,
+		UpdatedAt:                key.UpdatedAt,
+		ExpiresAt:                key.ExpiresAt,
+		LastUsedAt:               key.LastUsedAt,
+	}
+}
+
+func toConfiguredAPIKeyResponse(selection usermanagement.ConfiguredAPIKeySelection) configuredAPIKeyResponse {
+	return configuredAPIKeyResponse{
+		Fingerprint:       selection.Fingerprint,
+		Prefix:            selection.Prefix,
+		Assigned:          selection.Assigned,
+		AssignedUserID:    string(selection.AssignedUserID),
+		AssignedKeyID:     string(selection.AssignedKeyID),
+		AssignedKeyName:   selection.AssignedKeyName,
+		AssignedStatus:    string(selection.AssignedStatus),
+		LastUsedAt:        selection.LastUsedAt,
+		ConfiguredPresent: selection.ConfiguredPresent,
 	}
 }

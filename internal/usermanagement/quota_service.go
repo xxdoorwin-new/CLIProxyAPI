@@ -88,6 +88,10 @@ func (s *QuotaService) HasAvailableQuota(ctx context.Context, userID UserID, req
 	if err != nil {
 		return false, nil, err
 	}
+	// LimitCredits == 0 means unlimited — always allow.
+	if summary.LimitCredits == 0 {
+		return true, summary, nil
+	}
 	return summary.RemainingCredits >= requiredCredits, summary, nil
 }
 

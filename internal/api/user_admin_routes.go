@@ -110,6 +110,40 @@ func (s *Server) handleAdminUserStatusAction(c *gin.Context, action func(*userma
 	c.JSON(http.StatusOK, gin.H{"user": toUserResponse(user)})
 }
 
+func (s *Server) handleAdminBootstrap(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	// Bootstrap requires management-key authorization, not a user session.
+	if auth, _ := c.Get("managementAuth"); auth != "management_key" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "bootstrap requires management key authorization"})
+		return
+	}
+	var body struct {
+		Username    string `json:"username"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	user, err := usermanagement.NewBootstrapService(store).CreateFirstAdmin(c.Request.Context(), usermanagement.BootstrapAdminRequest{
+		ManagementAuthorized: true,
+		Username:             body.Username,
+		Email:                body.Email,
+		Password:             body.Password,
+		DisplayName:          body.DisplayName,
+	})
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"user": toUserResponse(user)})
+}
+
 func toUserResponses(users []usermanagement.User) []userResponse {
 	out := make([]userResponse, 0, len(users))
 	for i := range users {

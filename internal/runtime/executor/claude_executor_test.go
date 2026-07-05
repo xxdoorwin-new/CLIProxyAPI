@@ -107,6 +107,42 @@ func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	}
 }
 
+func TestApplyClaudeHeaders_DeviceMasqueradePinsRuntimeAndLang(t *testing.T) {
+	resetClaudeDeviceProfileCache()
+
+	cfg := &config.Config{
+		Privacy: config.PrivacyConfig{DeviceMasquerade: true},
+	}
+	auth := &cliproxyauth.Auth{
+		ID: "auth-device-masquerade",
+		Attributes: map[string]string{
+			"api_key":                    "key-device-masquerade",
+			"header:X-Stainless-Runtime": "bun",
+			"header:X-Stainless-Lang":    "python",
+		},
+	}
+	incoming := http.Header{
+		"User-Agent":                  []string{"curl/8.7.1"},
+		"X-Stainless-Package-Version": []string{"9.9.9"},
+		"X-Stainless-Runtime":         []string{"deno"},
+		"X-Stainless-Runtime-Version": []string{"v99.0.0"},
+		"X-Stainless-Lang":            []string{"go"},
+		"X-Stainless-Os":              []string{"Windows"},
+		"X-Stainless-Arch":            []string{"x64"},
+	}
+
+	req := newClaudeHeaderTestRequest(t, incoming)
+	applyClaudeHeaders(req, auth, "key-device-masquerade", false, nil, cfg)
+
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.63 (external, cli)", "0.74.0", "v24.3.0", "MacOS", "arm64")
+	if got := req.Header.Get("X-Stainless-Runtime"); got != "node" {
+		t.Fatalf("X-Stainless-Runtime = %q, want %q", got, "node")
+	}
+	if got := req.Header.Get("X-Stainless-Lang"); got != "js" {
+		t.Fatalf("X-Stainless-Lang = %q, want %q", got, "js")
+	}
+}
+
 func TestApplyClaudeHeaders_TracksHighestClaudeCLIFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true

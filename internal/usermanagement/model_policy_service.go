@@ -61,7 +61,8 @@ func (s *ModelPolicyService) IsModelAllowed(ctx context.Context, userID UserID, 
 	if err != nil {
 		return false, nil, err
 	}
-	if policy.AllowAll {
+	// AllowAll explicitly set, or no models restriction configured (empty list) — allow everything.
+	if policy.AllowAll || len(policy.Models) == 0 {
 		return true, policy, nil
 	}
 	model = strings.TrimSpace(model)
@@ -89,10 +90,12 @@ func (s *ModelPolicyService) resolve(ctx context.Context, subjectType PolicySubj
 	}
 	policy, err := s.policies.GetModelPolicy(ctx, subjectType, subjectID)
 	if errors.Is(err, ErrNotFound) {
+		// No explicit policy set — default to allow all models so that users
+		// without a configured policy can still use the API.
 		return &ResolvedModelPolicy{
 			SubjectType: subjectType,
 			SubjectID:   "",
-			AllowAll:    false,
+			AllowAll:    true,
 			Models:      nil,
 		}, nil
 	}

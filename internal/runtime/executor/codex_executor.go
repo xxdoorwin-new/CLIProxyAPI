@@ -1165,6 +1165,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			if bytes.HasPrefix(line, dataTag) {
 				data := bytes.TrimSpace(line[5:])
+				var tokenCountPayload []byte
 				if streamErr, terminalBody, ok := codexTerminalStreamErr(data); ok {
 					clearCodexReasoningReplayOnInvalidSignature(replayScope, streamErr.StatusCode(), terminalBody)
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
@@ -1186,7 +1187,32 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					cacheCodexReasoningReplayFromCompleted(replayScope, data)
 					translatedLine = append([]byte("data: "), data...)
+					if from == to {
+						tokenCountPayload = buildCodexTokenCountPayloadFromCompleted(data, nil)
+					}
 				}
+
+				translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
+				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, translatedLine, &param)
+				for i := range chunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					case <-ctx.Done():
+						return
+					}
+				}
+				if len(tokenCountPayload) > 0 {
+					tokenCountLine := encodeCodexWebsocketAsSSE(applyCodexIdentityExposeResponsePayload(tokenCountPayload, identityState))
+					if len(tokenCountLine) > 0 {
+						tokenCountLine = append(tokenCountLine, '\n')
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Payload: tokenCountLine}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+				continue
 			}
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)

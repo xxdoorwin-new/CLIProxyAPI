@@ -17,27 +17,37 @@ const (
 )
 
 type Provider struct {
-	name  string
-	users usermanagement.UserStore
-	keys  usermanagement.APIKeyStore
-	now   func() time.Time
+	name       string
+	users      usermanagement.UserStore
+	keys       usermanagement.APIKeyStore
+	configured map[string]struct{}
+	now        func() time.Time
 }
 
-func NewProvider(users usermanagement.UserStore, keys usermanagement.APIKeyStore) *Provider {
+func NewProvider(users usermanagement.UserStore, keys usermanagement.APIKeyStore, configuredKeys []string) *Provider {
+	configured := make(map[string]struct{}, len(configuredKeys))
+	for _, key := range configuredKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		configured[usermanagement.ConfiguredAPIKeyFingerprintHex(key)] = struct{}{}
+	}
 	return &Provider{
-		name:  DefaultProviderName,
-		users: users,
-		keys:  keys,
-		now:   time.Now,
+		name:       DefaultProviderName,
+		users:      users,
+		keys:       keys,
+		configured: configured,
+		now:        time.Now,
 	}
 }
 
-func Register(users usermanagement.UserStore, keys usermanagement.APIKeyStore, enabled bool) {
+func Register(users usermanagement.UserStore, keys usermanagement.APIKeyStore, configuredKeys []string, enabled bool) {
 	if !enabled || users == nil || keys == nil {
 		sdkaccess.UnregisterProvider(AccessProviderTypeUserAPIKey)
 		return
 	}
-	sdkaccess.RegisterProvider(AccessProviderTypeUserAPIKey, NewProvider(users, keys))
+	sdkaccess.RegisterProvider(AccessProviderTypeUserAPIKey, NewProvider(users, keys, configuredKeys))
 }
 
 func (p *Provider) Identifier() string {
@@ -69,20 +79,21 @@ func (p *Provider) Authenticate(ctx context.Context, r *http.Request) (*sdkacces
 }
 
 func (p *Provider) authenticateCandidate(ctx context.Context, candidate credentialCandidate) (*sdkaccess.Result, *sdkaccess.AuthError) {
-	prefix := usermanagement.DisplayPrefixForUserAPIKey(candidate.value)
-	if prefix == "" {
+	fingerprint := usermanagement.ConfiguredAPIKeyFingerprint(candidate.value)
+	fingerprintHex := usermanagement.EncodeAPIKeyFingerprint(fingerprint)
+	if fingerprintHex == "" {
 		return nil, sdkaccess.NewInvalidCredentialError()
 	}
-	keys, err := p.keys.FindAPIKeyByPrefix(ctx, prefix)
+	if _, ok := p.configured[fingerprintHex]; !ok {
+		return nil, sdkaccess.NewInvalidCredentialError()
+	}
+	keys, err := p.keys.FindAPIKeyByFingerprint(ctx, fingerprint)
 	if err != nil {
 		return nil, sdkaccess.NewInternalAuthError("User API key lookup failed", err)
 	}
 	for _, key := range keys {
-		if !usermanagement.VerifyUserAPIKey(candidate.value, key.KeyHash) {
-			continue
-		}
 		if key.Status != usermanagement.APIKeyStatusActive {
-			return nil, sdkaccess.NewInvalidCredentialError()
+			continue
 		}
 		if key.ExpiresAt != nil && !key.ExpiresAt.After(p.now().UTC()) {
 			return nil, sdkaccess.NewInvalidCredentialError()

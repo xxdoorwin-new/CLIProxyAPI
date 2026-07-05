@@ -348,7 +348,9 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	for _, headerName := range []string{
 		"User-Agent",
 		"X-Stainless-Package-Version",
+		"X-Stainless-Runtime",
 		"X-Stainless-Runtime-Version",
+		"X-Stainless-Lang",
 		"X-Stainless-Os",
 		"X-Stainless-Arch",
 	} {
@@ -356,7 +358,9 @@ func ApplyClaudeDeviceProfileHeaders(r *http.Request, profile ClaudeDeviceProfil
 	}
 	r.Header.Set("User-Agent", profile.UserAgent)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
+	r.Header.Set("X-Stainless-Runtime", "node")
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
+	r.Header.Set("X-Stainless-Lang", "js")
 	r.Header.Set("X-Stainless-Os", profile.OS)
 	r.Header.Set("X-Stainless-Arch", profile.Arch)
 }

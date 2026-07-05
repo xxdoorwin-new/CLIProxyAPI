@@ -174,6 +174,49 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 	}
 }
 
+func TestManagementModelsReturnsServerModelRegistry(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-management-models"
+	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{
+		{ID: "management-test-model", Object: "model", OwnedBy: "test", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/models", nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var payload struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if errUnmarshal := json.Unmarshal(rr.Body.Bytes(), &payload); errUnmarshal != nil {
+		t.Fatalf("unmarshal response: %v body=%s", errUnmarshal, rr.Body.String())
+	}
+	if payload.Object != "list" {
+		t.Fatalf("object = %q, want list", payload.Object)
+	}
+	for _, model := range payload.Data {
+		if model.ID == "management-test-model" {
+			return
+		}
+	}
+	t.Fatalf("management-test-model missing from response: %s", rr.Body.String())
+}
+
 func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

@@ -1392,6 +1392,60 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	return err
 }
 
+// SaveConfigPreserveCommentsUpdateNestedBool updates a nested boolean key path like ["a","enabled"]
+// while preserving comments and positions.
+func SaveConfigPreserveCommentsUpdateNestedBool(configFile string, path []string, value bool) error {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err = yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return fmt.Errorf("invalid yaml document structure")
+	}
+	node := root.Content[0]
+	for i, key := range path {
+		if i == len(path)-1 {
+			v := getOrCreateMapValue(node, key)
+			v.Kind = yaml.ScalarNode
+			v.Tag = "!!bool"
+			if value {
+				v.Value = "true"
+			} else {
+				v.Value = "false"
+			}
+			continue
+		}
+		next := getOrCreateMapValue(node, key)
+		if next.Kind != yaml.MappingNode {
+			next.Kind = yaml.MappingNode
+			next.Tag = "!!map"
+		}
+		node = next
+	}
+	f, err := os.Create(configFile)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err = enc.Encode(&root); err != nil {
+		_ = enc.Close()
+		return err
+	}
+	if err = enc.Close(); err != nil {
+		return err
+	}
+	data = NormalizeCommentIndentation(buf.Bytes())
+	_, err = f.Write(data)
+	return err
+}
+
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.
 func NormalizeCommentIndentation(data []byte) []byte {
 	lines := bytes.Split(data, []byte("\n"))

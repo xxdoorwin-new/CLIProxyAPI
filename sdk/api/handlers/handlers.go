@@ -190,10 +190,18 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	return retries
 }
 
-// PassthroughHeadersEnabled returns whether upstream response headers should be forwarded to clients.
-// Default is false.
+// PassthroughHeadersEnabled returns whether all safe upstream response headers
+// should be forwarded to clients. Quota headers are forwarded separately even
+// when this is false so first-party clients can render usage windows.
 func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
+}
+
+func ForwardableUpstreamHeaders(cfg *config.SDKConfig, headers http.Header) http.Header {
+	if PassthroughHeadersEnabled(cfg) {
+		return FilterUpstreamHeaders(headers)
+	}
+	return FilterQuotaHeaders(headers)
 }
 
 func requestExecutionMetadata(ctx context.Context) map[string]any {
@@ -619,10 +627,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 		}
 		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
-	if !PassthroughHeadersEnabled(h.Cfg) {
-		return resp.Payload, nil, nil
-	}
-	return resp.Payload, FilterUpstreamHeaders(resp.Headers), nil
+	return resp.Payload, ForwardableUpstreamHeaders(h.Cfg, resp.Headers), nil
 }
 
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
@@ -669,10 +674,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		}
 		return nil, nil, &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
-	if !PassthroughHeadersEnabled(h.Cfg) {
-		return resp.Payload, nil, nil
-	}
-	return resp.Payload, FilterUpstreamHeaders(resp.Headers), nil
+	return resp.Payload, ForwardableUpstreamHeaders(h.Cfg, resp.Headers), nil
 }
 
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
@@ -735,16 +737,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		close(errChan)
 		return nil, nil, errChan
 	}
-	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
 	// Capture upstream headers from the initial connection synchronously before the goroutine starts.
 	// Keep a mutable map so bootstrap retries can replace it before first payload is sent.
-	var upstreamHeaders http.Header
-	if passthroughHeadersEnabled {
-		upstreamHeaders = cloneHeader(FilterUpstreamHeaders(streamResult.Headers))
-		if upstreamHeaders == nil {
-			upstreamHeaders = make(http.Header)
-		}
-	}
+	upstreamHeaders := cloneHeader(ForwardableUpstreamHeaders(h.Cfg, streamResult.Headers))
 	chunks := streamResult.Chunks
 	dataChan := make(chan []byte)
 	errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -821,8 +816,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 							bootstrapRetries++
 							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 							if retryErr == nil {
-								if passthroughHeadersEnabled {
-									replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
+								if upstreamHeaders != nil {
+									replaceHeader(upstreamHeaders, ForwardableUpstreamHeaders(h.Cfg, retryResult.Headers))
 								}
 								chunks = retryResult.Chunks
 								continue outer
@@ -1055,8 +1050,8 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode
 	}
-	if msg != nil && msg.Addon != nil && PassthroughHeadersEnabled(h.Cfg) {
-		for key, values := range msg.Addon {
+	if msg != nil && msg.Addon != nil {
+		for key, values := range ForwardableUpstreamHeaders(h.Cfg, msg.Addon) {
 			if len(values) == 0 {
 				continue
 			}

@@ -36,6 +36,13 @@ var hopByHopHeaders = map[string]struct{}{
 	"Content-Encoding": {},
 }
 
+// quotaHeaderNames lists response headers clients use to render upstream usage,
+// quota, and retry windows. These are forwarded even when broad passthrough is
+// disabled so IDE clients can keep their usage UI in sync.
+var quotaHeaderNames = map[string]struct{}{
+	"Retry-After": {},
+}
+
 // FilterUpstreamHeaders returns a copy of src with hop-by-hop and security-sensitive
 // headers removed. Returns nil if src is nil or empty after filtering.
 func FilterUpstreamHeaders(src http.Header) http.Header {
@@ -71,6 +78,41 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 		return nil
 	}
 	return dst
+}
+
+// FilterQuotaHeaders returns only usage/quota/limit headers after applying the
+// same safety filtering as full upstream header passthrough.
+func FilterQuotaHeaders(src http.Header) http.Header {
+	filtered := FilterUpstreamHeaders(src)
+	if filtered == nil {
+		return nil
+	}
+	dst := make(http.Header)
+	for key, values := range filtered {
+		if !isQuotaHeader(key) {
+			continue
+		}
+		dst[key] = values
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	return dst
+}
+
+func isQuotaHeader(key string) bool {
+	canonicalKey := http.CanonicalHeaderKey(key)
+	if _, ok := quotaHeaderNames[canonicalKey]; ok {
+		return true
+	}
+	lowerKey := strings.ToLower(key)
+	return strings.Contains(lowerKey, "ratelimit") ||
+		strings.Contains(lowerKey, "rate-limit") ||
+		strings.Contains(lowerKey, "quota") ||
+		strings.Contains(lowerKey, "usage-limit") ||
+		strings.Contains(lowerKey, "usage_limit") ||
+		strings.Contains(lowerKey, "usage-tier") ||
+		strings.Contains(lowerKey, "usage_tier")
 }
 
 func connectionScopedHeaders(src http.Header) map[string]struct{} {

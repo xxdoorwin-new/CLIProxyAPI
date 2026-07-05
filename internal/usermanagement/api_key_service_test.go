@@ -11,20 +11,22 @@ func TestUserAPIKeyServiceCreateListRenameAndUpdateLastUsed(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
 	user := createTestUser(t, ctx, store)
-	service := NewUserAPIKeyService(store, store)
+	configuredKey := "configured-key-1"
+	service := NewUserAPIKeyService(store, store, []string{configuredKey})
 
-	credential, err := service.CreateKey(ctx, CreateUserAPIKeyRequest{
-		UserID: user.ID,
-		Name:   "default",
+	key, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKey),
 	})
 	if err != nil {
-		t.Fatalf("CreateKey() error = %v", err)
+		t.Fatalf("BindKey() error = %v", err)
 	}
-	if credential.Plaintext == "" || !VerifyUserAPIKey(credential.Plaintext, credential.APIKey.KeyHash) {
-		t.Fatalf("credential = %#v", credential)
+	if got, want := EncodeAPIKeyFingerprint(key.KeyHash), ConfiguredAPIKeyFingerprintHex(configuredKey); got != want {
+		t.Fatalf("fingerprint = %q, want %q", got, want)
 	}
 
-	renamed, err := service.RenameKey(ctx, credential.APIKey.ID, "renamed")
+	renamed, err := service.RenameKey(ctx, key.ID, "renamed")
 	if err != nil {
 		t.Fatalf("RenameKey() error = %v", err)
 	}
@@ -33,7 +35,7 @@ func TestUserAPIKeyServiceCreateListRenameAndUpdateLastUsed(t *testing.T) {
 	}
 
 	usedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	used, err := service.UpdateLastUsed(ctx, credential.APIKey.ID, usedAt)
+	used, err := service.UpdateLastUsed(ctx, key.ID, usedAt)
 	if err != nil {
 		t.Fatalf("UpdateLastUsed() error = %v", err)
 	}
@@ -48,19 +50,27 @@ func TestUserAPIKeyServiceCreateListRenameAndUpdateLastUsed(t *testing.T) {
 	if len(metadata) != 1 || metadata[0].Prefix == "" || metadata[0].Name != "renamed" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
+	if !metadata[0].ConfiguredKeyPresent || metadata[0].ConfiguredKeyFingerprint != ConfiguredAPIKeyFingerprintHex(configuredKey) {
+		t.Fatalf("metadata configured fields = %#v", metadata[0])
+	}
 }
 
-func TestUserAPIKeyServiceDisableRevokeAndRotate(t *testing.T) {
+func TestUserAPIKeyServiceDisableEnableAndUnbind(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
 	user := createTestUser(t, ctx, store)
-	service := NewUserAPIKeyService(store, store)
-	credential, err := service.CreateKey(ctx, CreateUserAPIKeyRequest{UserID: user.ID, Name: "default"})
+	configuredKey := "configured-key-2"
+	service := NewUserAPIKeyService(store, store, []string{configuredKey})
+	key, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKey),
+	})
 	if err != nil {
-		t.Fatalf("CreateKey() error = %v", err)
+		t.Fatalf("BindKey() error = %v", err)
 	}
 
-	disabled, err := service.DisableKey(ctx, credential.APIKey.ID)
+	disabled, err := service.DisableKey(ctx, key.ID)
 	if err != nil {
 		t.Fatalf("DisableKey() error = %v", err)
 	}
@@ -68,26 +78,19 @@ func TestUserAPIKeyServiceDisableRevokeAndRotate(t *testing.T) {
 		t.Fatalf("Status = %q, want disabled", disabled.Status)
 	}
 
-	rotated, err := service.RotateKey(ctx, credential.APIKey.ID)
+	enabled, err := service.EnableKey(ctx, key.ID)
 	if err != nil {
-		t.Fatalf("RotateKey() error = %v", err)
+		t.Fatalf("EnableKey() error = %v", err)
 	}
-	if rotated.Plaintext == credential.Plaintext {
-		t.Fatal("RotateKey() returned same plaintext key")
-	}
-	if !VerifyUserAPIKey(rotated.Plaintext, rotated.APIKey.KeyHash) {
-		t.Fatal("rotated key hash did not verify")
-	}
-	if VerifyUserAPIKey(credential.Plaintext, rotated.APIKey.KeyHash) {
-		t.Fatal("old plaintext verifies against rotated hash")
+	if enabled.Status != APIKeyStatusActive {
+		t.Fatalf("Status = %q, want active", enabled.Status)
 	}
 
-	revoked, err := service.RevokeKey(ctx, credential.APIKey.ID)
-	if err != nil {
-		t.Fatalf("RevokeKey() error = %v", err)
+	if err = service.UnbindKey(ctx, key.ID); err != nil {
+		t.Fatalf("UnbindKey() error = %v", err)
 	}
-	if revoked.Status != APIKeyStatusRevoked {
-		t.Fatalf("Status = %q, want revoked", revoked.Status)
+	if _, err = store.GetAPIKey(ctx, key.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAPIKey() after unbind error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -108,10 +111,56 @@ func TestUserAPIKeyServiceRejectsInactiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser() error = %v", err)
 	}
-	service := NewUserAPIKeyService(store, store)
+	configuredKey := "configured-key-3"
+	service := NewUserAPIKeyService(store, store, []string{configuredKey})
 
-	_, err = service.CreateKey(ctx, CreateUserAPIKeyRequest{UserID: user.ID, Name: "default"})
+	_, err = service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "default",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKey),
+	})
 	if !errors.Is(err, ErrForbidden) {
-		t.Fatalf("CreateKey() error = %v, want ErrForbidden", err)
+		t.Fatalf("BindKey() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestUserAPIKeyServiceListsConfiguredSelectionAndMissingBinding(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	user := createTestUser(t, ctx, store)
+	boundKey := "configured-key-4"
+	unboundKey := "configured-key-5"
+	service := NewUserAPIKeyService(store, store, []string{boundKey, unboundKey})
+
+	binding, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "bound",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(boundKey),
+	})
+	if err != nil {
+		t.Fatalf("BindKey() error = %v", err)
+	}
+
+	selections, err := service.ListConfiguredAPIKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListConfiguredAPIKeys() error = %v", err)
+	}
+	if len(selections) != 2 {
+		t.Fatalf("selection count = %d, want 2", len(selections))
+	}
+	if !selections[0].Assigned || selections[0].AssignedKeyID != binding.ID || selections[0].AssignedUserID != user.ID {
+		t.Fatalf("bound selection = %#v", selections[0])
+	}
+	if selections[1].Assigned || !selections[1].ConfiguredPresent {
+		t.Fatalf("unbound selection = %#v", selections[1])
+	}
+
+	missingService := NewUserAPIKeyService(store, store, []string{unboundKey})
+	metadata, err := missingService.ListKeyMetadataByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListKeyMetadataByUser() error = %v", err)
+	}
+	if len(metadata) != 1 || metadata[0].ConfiguredKeyPresent {
+		t.Fatalf("missing metadata = %#v", metadata)
 	}
 }

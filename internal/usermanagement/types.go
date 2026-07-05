@@ -111,7 +111,9 @@ type UpdateSessionParams struct {
 	LastSeenAt *time.Time
 }
 
-// APIKey stores non-secret metadata and a hash for a user-owned model API key.
+// APIKey stores ownership metadata for a configured caller API key.
+// KeyHash is a stable fingerprint of the configured key, not an independently
+// generated user-management secret.
 type APIKey struct {
 	ID         APIKeyID
 	UserID     UserID
@@ -141,6 +143,11 @@ type UpdateAPIKeyParams struct {
 	Status     *APIKeyStatus
 	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
+}
+
+type ConfiguredAPIKeyRef struct {
+	Fingerprint string
+	Prefix      string
 }
 
 // ModelPolicy grants client-visible models to either a user or an API key.

@@ -49,7 +49,9 @@ type APIKeyStore interface {
 	GetAPIKey(ctx context.Context, id APIKeyID) (*APIKey, error)
 	ListAPIKeysByUser(ctx context.Context, userID UserID) ([]APIKey, error)
 	FindAPIKeyByPrefix(ctx context.Context, prefix string) ([]APIKey, error)
+	FindAPIKeyByFingerprint(ctx context.Context, fingerprint []byte) ([]APIKey, error)
 	UpdateAPIKey(ctx context.Context, id APIKeyID, params UpdateAPIKeyParams) (*APIKey, error)
+	DeleteAPIKey(ctx context.Context, id APIKeyID) error
 }
 
 type ModelPolicyStore interface {

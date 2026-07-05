@@ -323,6 +323,27 @@ func (s *SQLiteStore) FindAPIKeyByPrefix(ctx context.Context, prefix string) ([]
 	return keys, nil
 }
 
+func (s *SQLiteStore) FindAPIKeyByFingerprint(ctx context.Context, fingerprint []byte) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+		FROM api_keys WHERE key_hash = ? ORDER BY created_at DESC`, fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("user management sqlite: find api keys by fingerprint: %w", err)
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		key, errScan := scanAPIKey(rows)
+		if errScan != nil {
+			return nil, errScan
+		}
+		keys = append(keys, *key)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("user management sqlite: iterate api keys: %w", err)
+	}
+	return keys, nil
+}
+
 func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, id APIKeyID, params UpdateAPIKeyParams) (*APIKey, error) {
 	sets := []string{"updated_at = ?"}
 	args := []any{formatTime(time.Now().UTC())}
@@ -362,6 +383,17 @@ func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, id APIKeyID, params Upda
 		return nil, ErrNotFound
 	}
 	return s.GetAPIKey(ctx, id)
+}
+
+func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, id APIKeyID) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, id)
+	if err != nil {
+		return mapSQLiteWriteError(err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) SetModelPolicy(ctx context.Context, params SetModelPolicyParams) (*ModelPolicy, error) {

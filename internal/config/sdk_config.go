@@ -41,8 +41,8 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
-	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
-	// Default is false (disabled).
+	// PassthroughHeaders controls whether all safe upstream response headers are forwarded to downstream clients.
+	// Usage/quota/rate-limit headers are forwarded even when this is false.
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
 
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).

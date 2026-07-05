@@ -53,3 +53,34 @@ func TestFilterUpstreamHeaders_ReturnsNilWhenAllHeadersBlocked(t *testing.T) {
 		t.Fatalf("expected nil when all headers are filtered, got %#v", filtered)
 	}
 }
+
+func TestFilterQuotaHeaders_PreservesUsageLimitHeaders(t *testing.T) {
+	src := http.Header{}
+	src.Set("X-RateLimit-Remaining-Requests", "10")
+	src.Set("Anthropic-RateLimit-Requests-Reset", "2026-06-27T00:00:00Z")
+	src.Set("OpenAI-Usage-Limit-Reset-Seconds", "30")
+	src.Set("Retry-After", "5")
+	src.Set("X-Request-Id", "req-1")
+	src.Set("Set-Cookie", "session=secret")
+	src.Set("Content-Encoding", "gzip")
+
+	filtered := FilterQuotaHeaders(src)
+	if filtered == nil {
+		t.Fatalf("expected quota headers, got nil")
+	}
+	for _, key := range []string{
+		"X-RateLimit-Remaining-Requests",
+		"Anthropic-RateLimit-Requests-Reset",
+		"OpenAI-Usage-Limit-Reset-Seconds",
+		"Retry-After",
+	} {
+		if got := filtered.Get(key); got == "" {
+			t.Fatalf("expected %s to be preserved", key)
+		}
+	}
+	for _, key := range []string{"X-Request-Id", "Set-Cookie", "Content-Encoding"} {
+		if got := filtered.Get(key); got != "" {
+			t.Fatalf("expected %s to be removed, got %q", key, got)
+		}
+	}
+}

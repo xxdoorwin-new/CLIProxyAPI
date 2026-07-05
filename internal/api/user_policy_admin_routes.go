@@ -272,3 +272,33 @@ func toPricingRuleResponse(rule *usermanagement.PricingRule) pricingRuleResponse
 		UpdatedAt:                        rule.UpdatedAt,
 	}
 }
+
+func (s *Server) handleAdminGetUserQuotaSummary(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	summary, err := usermanagement.NewQuotaService(store, store).Summary(c.Request.Context(), usermanagement.UserID(c.Param("id")))
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"quota": toQuotaSummaryResponse(summary)})
+}
+
+func (s *Server) handleAdminGetUserUsage(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	summary, err := usermanagement.NewUsageSummaryService(store, store, store).Summary(c.Request.Context(), usermanagement.UsageSummaryQuery{
+		UserID: usermanagement.UserID(c.Param("id")),
+		Limit:  intQuery(c, "limit"),
+		Offset: intQuery(c, "offset"),
+	})
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"usage": toUsageSummaryResponse(summary)})
+}

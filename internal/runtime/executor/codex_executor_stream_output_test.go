@@ -225,3 +225,56 @@ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDon
 		t.Fatalf("response.output[0].content[0].text = %q, want %q; completed=%s", gotContent, "ok", string(completed))
 	}
 }
+
+func TestCodexExecutorExecuteStream_ForwardsTokenCountRateLimitsToCodexClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","rate_limits":{"limit_id":"codex","primary":{"used_percent":4.0,"window_minutes":300,"resets_at":1781594936},"secondary":{"used_percent":8.0,"window_minutes":10080,"resets_at":1782114707}},"response":{"id":"resp_1","object":"response","created_at":1775555723,"status":"completed","model":"gpt-5.4-mini-2026-03-17","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":8,"output_tokens":28,"total_tokens":36}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4-mini",
+		Payload: []byte(`{"model":"gpt-5.4-mini","input":"Say ok"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("codex"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var tokenCount []byte
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		payload := bytes.TrimSpace(chunk.Payload)
+		if !bytes.HasPrefix(payload, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(payload[5:])
+		if gjson.GetBytes(data, "type").String() == "token_count" {
+			tokenCount = append([]byte(nil), data...)
+		}
+	}
+
+	if len(tokenCount) == 0 {
+		t.Fatal("missing token_count chunk")
+	}
+	if got := gjson.GetBytes(tokenCount, "rate_limits.primary.window_minutes").Int(); got != 300 {
+		t.Fatalf("primary window_minutes = %d, want 300; token_count=%s", got, string(tokenCount))
+	}
+	if got := gjson.GetBytes(tokenCount, "rate_limits.secondary.window_minutes").Int(); got != 10080 {
+		t.Fatalf("secondary window_minutes = %d, want 10080; token_count=%s", got, string(tokenCount))
+	}
+	if got := gjson.GetBytes(tokenCount, "info.last_token_usage.total_tokens").Int(); got != 36 {
+		t.Fatalf("last total_tokens = %d, want 36; token_count=%s", got, string(tokenCount))
+	}
+}

@@ -45,3 +45,28 @@ func TestApplyAccessProvidersUserManagementDisabledPreservesFlatAPIKeys(t *testi
 		t.Fatalf("Principal = %q, want flat-key", result.Principal)
 	}
 }
+
+func TestApplyAccessProvidersUserManagementEnabledDisablesFlatAPIKeys(t *testing.T) {
+	sdkaccess.UnregisterProvider(useraccess.AccessProviderTypeUserAPIKey)
+	sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
+	t.Cleanup(func() {
+		sdkaccess.UnregisterProvider(useraccess.AccessProviderTypeUserAPIKey)
+		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
+	})
+
+	manager := sdkaccess.NewManager()
+	cfg := &config.Config{}
+	cfg.APIKeys = []string{"flat-key"}
+	cfg.UserManagement.Enabled = true
+
+	_, err := ApplyAccessProviders(manager, nil, cfg)
+	if err != nil {
+		t.Fatalf("ApplyAccessProviders() error = %v", err)
+	}
+
+	for _, provider := range manager.Providers() {
+		if provider.Identifier() == sdkaccess.DefaultAccessProviderName {
+			t.Fatalf("flat config provider is still registered while user management is enabled")
+		}
+	}
+}

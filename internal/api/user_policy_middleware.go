@@ -11,6 +11,41 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// UserQuotaMiddleware checks whether the authenticated user has remaining credits before
+// forwarding the request to upstream provider routing. It runs after UserModelPolicyMiddleware
+// so that the "userRequestedModel" context value is already set for actual model calls.
+// Requests without a resolved user principal or without a model name (e.g. GET /v1/models)
+// are passed through without a quota check.
+func UserQuotaMiddleware(quota *usermanagement.QuotaService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if quota == nil {
+			c.Next()
+			return
+		}
+		userID, _ := userPrincipalFromContext(c)
+		if userID == "" {
+			c.Next()
+			return
+		}
+		// Only enforce quota when an actual model request is in flight (set by UserModelPolicyMiddleware).
+		if _, hasModel := c.Get("userRequestedModel"); !hasModel {
+			c.Next()
+			return
+		}
+		available, _, err := quota.HasAvailableQuota(c.Request.Context(), userID, 1)
+		if err != nil {
+			// Fail open: allow the request through if the quota store is unavailable.
+			c.Next()
+			return
+		}
+		if !available {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "quota exhausted"})
+			return
+		}
+		c.Next()
+	}
+}
+
 func UserModelPolicyMiddleware(policy *usermanagement.ModelPolicyService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if policy == nil {
