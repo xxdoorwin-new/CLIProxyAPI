@@ -191,6 +191,9 @@ func TestUserPortalRoutesReturnSelfServiceData(t *testing.T) {
 	if !keys.APIKeys[0].ConfiguredKeyPresent {
 		t.Fatalf("api key should be marked configured: %#v", keys.APIKeys[0])
 	}
+	if keys.APIKeys[0].APIKey != cfg.APIKeys[0] {
+		t.Fatalf("api key plaintext = %q, want configured key", keys.APIKeys[0].APIKey)
+	}
 
 	var models struct {
 		ModelPolicy modelPolicyResponse `json:"model_policy"`
@@ -220,6 +223,31 @@ func TestUserPortalRoutesReturnSelfServiceData(t *testing.T) {
 	}
 	if len(usage.Usage.RecentUsage) != 1 || usage.Usage.RecentUsage[0].RequestID != "req-portal" {
 		t.Fatalf("usage = %#v", usage.Usage)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v0/user/password", strings.NewReader(`{
+		"current_password":"secret",
+		"new_password":"new-secret-password"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change password status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v0/user/login", strings.NewReader(`{"identity":"`+user.Username+`","password":"secret"}`))
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d, want 401; body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v0/user/login", strings.NewReader(`{"identity":"`+user.Username+`","password":"new-secret-password"}`))
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 }
 

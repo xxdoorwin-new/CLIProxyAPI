@@ -67,6 +67,7 @@ func (s *Server) registerUserSessionRoutes() {
 	group.GET("/session", s.handleUserSession)
 	group.POST("/logout", s.handleUserLogout)
 	group.GET("/profile", s.handleUserProfile)
+	group.POST("/password", s.handleUserChangePassword)
 	group.GET("/api-keys", s.handleUserAPIKeys)
 	group.GET("/models", s.handleUserAllowedModels)
 	group.GET("/quota", s.handleUserQuotaSummary)
@@ -193,6 +194,44 @@ func (s *Server) handleUserProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": toUserResponse(user)})
 }
 
+func (s *Server) handleUserChangePassword(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	principal, ok := s.resolveUserSession(c, store)
+	if !ok {
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	user, err := store.GetUser(c.Request.Context(), principal.UserID)
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	if !usermanagement.VerifyPassword(body.CurrentPassword, user.PasswordHash) {
+		writeUserManagementError(c, usermanagement.ErrUnauthorized)
+		return
+	}
+	hash, err := usermanagement.HashPassword(body.NewPassword)
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	if _, err = store.UpdateUser(c.Request.Context(), principal.UserID, usermanagement.UpdateUserParams{PasswordHash: hash}); err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 func (s *Server) handleUserAPIKeys(c *gin.Context) {
 	store, ok := s.currentUserStore(c)
 	if !ok {
@@ -209,7 +248,11 @@ func (s *Server) handleUserAPIKeys(c *gin.Context) {
 	}
 	out := make([]userAPIKeyResponse, 0, len(keys))
 	for i := range keys {
-		out = append(out, toAPIKeyMetadataResponse(keys[i]))
+		entry := toAPIKeyMetadataResponse(keys[i])
+		if keys[i].ConfiguredKeyPresent {
+			entry.APIKey = s.configuredAPIKeyByFingerprint(keys[i].ConfiguredKeyFingerprint)
+		}
+		out = append(out, entry)
 	}
 	c.JSON(http.StatusOK, gin.H{"api_keys": out})
 }

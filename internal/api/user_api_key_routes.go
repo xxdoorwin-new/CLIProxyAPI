@@ -13,6 +13,7 @@ type userAPIKeyResponse struct {
 	UserID                   string     `json:"user_id"`
 	Name                     string     `json:"name"`
 	Prefix                   string     `json:"prefix"`
+	APIKey                   string     `json:"api_key,omitempty"`
 	Status                   string     `json:"status"`
 	ConfiguredKeyFingerprint string     `json:"configured_key_fingerprint"`
 	ConfiguredKeyPresent     bool       `json:"configured_key_present"`
@@ -179,6 +180,15 @@ func (s *Server) configuredAPIKeys() []string {
 		return nil
 	}
 	return append([]string(nil), s.cfg.APIKeys...)
+}
+
+func (s *Server) configuredAPIKeyByFingerprint(fingerprint string) string {
+	for _, key := range s.configuredAPIKeys() {
+		if usermanagement.ConfiguredAPIKeyFingerprintHex(key) == fingerprint {
+			return key
+		}
+	}
+	return ""
 }
 
 func toAPIKeyResponse(key *usermanagement.APIKey) userAPIKeyResponse {
