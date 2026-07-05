@@ -97,6 +97,19 @@ func (s *Server) handleAdminReactivateUser(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleAdminDeleteUser(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	err := usermanagement.NewUserLifecycleService(store, store).DeleteUser(c.Request.Context(), usermanagement.UserID(c.Param("id")))
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
 func (s *Server) handleAdminUserStatusAction(c *gin.Context, action func(*usermanagement.UserLifecycleService, usermanagement.UserID) (*usermanagement.User, error)) {
 	store, ok := s.currentUserStore(c)
 	if !ok {

@@ -664,6 +664,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/users/:id/reject", s.handleAdminRejectUser)
 		mgmt.POST("/users/:id/suspend", s.handleAdminSuspendUser)
 		mgmt.POST("/users/:id/reactivate", s.handleAdminReactivateUser)
+		mgmt.POST("/users/:id/delete", s.handleAdminDeleteUser)
 		mgmt.GET("/configured-api-keys", s.handleAdminListConfiguredAPIKeys)
 		mgmt.GET("/users/:id/api-keys", s.handleAdminListUserAPIKeys)
 		mgmt.POST("/users/:id/api-keys", s.handleAdminBindUserAPIKey)

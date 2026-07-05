@@ -33,6 +33,7 @@ type UserStore interface {
 	FindUserByIdentity(ctx context.Context, identity string) (*User, error)
 	ListUsers(ctx context.Context, filter UserFilter) ([]User, error)
 	UpdateUser(ctx context.Context, id UserID, params UpdateUserParams) (*User, error)
+	DeleteUser(ctx context.Context, id UserID) error
 }
 
 type SessionStore interface {

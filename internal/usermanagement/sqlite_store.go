@@ -166,6 +166,26 @@ func (s *SQLiteStore) UpdateUser(ctx context.Context, id UserID, params UpdateUs
 	return s.GetUser(ctx, id)
 }
 
+func (s *SQLiteStore) DeleteUser(ctx context.Context, id UserID) error {
+	if id == "" {
+		return ErrInvalid
+	}
+	// model_policies has no FK to users, clean it up explicitly.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM model_policies WHERE subject_type = ? AND subject_id = ?`,
+		PolicySubjectUser, string(id)); err != nil {
+		return fmt.Errorf("user management sqlite: delete user model policy: %w", err)
+	}
+	// Deleting the user row cascades sessions, api_keys, quota_policies, quota_rollups, usage_ledger.
+	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return mapSQLiteWriteError(err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLiteStore) CreateSession(ctx context.Context, params CreateSessionParams) (*Session, error) {
 	if err := params.Validate(); err != nil {
 		return nil, err

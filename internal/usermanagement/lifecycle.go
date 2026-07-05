@@ -75,6 +75,22 @@ func (s *UserLifecycleService) ReactivateUser(ctx context.Context, id UserID) (*
 	})
 }
 
+func (s *UserLifecycleService) DeleteUser(ctx context.Context, id UserID) error {
+	if s == nil || s.users == nil {
+		return ErrInvalid
+	}
+	if id == "" {
+		return invalid("user id is required")
+	}
+	// Revoke active sessions before removing the account.
+	if s.sessions != nil {
+		if err := s.sessions.RevokeSessionsForUser(ctx, id); err != nil {
+			return err
+		}
+	}
+	return s.users.DeleteUser(ctx, id)
+}
+
 func (s *UserLifecycleService) AssignRole(ctx context.Context, id UserID, role UserRole) (*User, error) {
 	if !role.IsValid() {
 		return nil, invalid("invalid user role %q", role)
