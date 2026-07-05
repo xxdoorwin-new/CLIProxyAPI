@@ -129,6 +129,10 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
+	if isOrdinaryUserManagementSession(c) && !isAllowedOrdinaryUserQuotaAPICall(method, parsedURL) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "quota read-only request not allowed"})
+		return
+	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
@@ -214,6 +218,35 @@ func (h *Handler) APICall(c *gin.Context) {
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func isAllowedOrdinaryUserQuotaAPICall(method string, parsedURL *url.URL) bool {
+	if parsedURL == nil {
+		return false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(method)) + " " +
+		strings.ToLower(strings.TrimSpace(parsedURL.Scheme)) + "://" +
+		strings.ToLower(strings.TrimSpace(parsedURL.Host)) + parsedURL.EscapedPath()
+	if parsedURL.RawPath == "" && strings.Contains(parsedURL.Path, ":") {
+		normalized = strings.ToUpper(strings.TrimSpace(method)) + " " +
+			strings.ToLower(strings.TrimSpace(parsedURL.Scheme)) + "://" +
+			strings.ToLower(strings.TrimSpace(parsedURL.Host)) + parsedURL.Path
+	}
+	if parsedURL.RawQuery != "" {
+		normalized += "?" + parsedURL.RawQuery
+	}
+	allowed := map[string]struct{}{
+		"GET https://api.anthropic.com/api/oauth/profile":                                            {},
+		"GET https://api.anthropic.com/api/oauth/usage":                                              {},
+		"GET https://api.kimi.com/coding/v1/usages":                                                  {},
+		"GET https://chatgpt.com/backend-api/wham/usage":                                             {},
+		"GET https://cli-chat-proxy.grok.com/v1/billing":                                             {},
+		"POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary":               {},
+		"POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary":         {},
+		"POST https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary": {},
+	}
+	_, ok := allowed[normalized]
+	return ok
 }
 
 func firstNonEmptyString(values ...*string) string {

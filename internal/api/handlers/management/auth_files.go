@@ -325,6 +325,9 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
+			if isOrdinaryUserManagementSession(c) {
+				entry = sanitizeAuthFileEntryForOrdinaryUser(entry)
+			}
 			files = append(files, entry)
 		}
 	}
@@ -334,6 +337,55 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return strings.ToLower(nameI) < strings.ToLower(nameJ)
 	})
 	c.JSON(200, gin.H{"files": files})
+}
+
+func isOrdinaryUserManagementSession(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	value, ok := c.Get("managementAuth")
+	if !ok {
+		return false
+	}
+	mode, ok := value.(string)
+	return ok && mode == "ordinary_user_session"
+}
+
+func sanitizeAuthFileEntryForOrdinaryUser(entry gin.H) gin.H {
+	if entry == nil {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"account":      {},
+		"account_type": {},
+		"auth_index":   {},
+		"disabled":     {},
+		"email":        {},
+		"id":           {},
+		"id_token":     {},
+		"label":        {},
+		"last_refresh": {},
+		"modtime":      {},
+		"name":         {},
+		"priority":     {},
+		"project_id":   {},
+		"provider":     {},
+		"runtime_only": {},
+		"size":         {},
+		"source":       {},
+		"status":       {},
+		"type":         {},
+		"updated_at":   {},
+		"unavailable":  {},
+		"websockets":   {},
+	}
+	safe := gin.H{}
+	for key, value := range entry {
+		if _, ok := allowed[key]; ok {
+			safe[key] = value
+		}
+	}
+	return safe
 }
 
 // GetAuthFileModels returns the models supported by a specific auth file

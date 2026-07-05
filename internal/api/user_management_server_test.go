@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usermanagement"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 func TestUserSessionRoutesRegisterLoginSessionAndLogout(t *testing.T) {
@@ -647,11 +648,27 @@ func TestManagementRoutesAcceptAdminSessionAndRejectOrdinaryUserSession(t *testi
 	cfg.UserManagement.Enabled = true
 	cfg.UserManagement.Storage.Driver = config.DefaultUserManagementStorage
 	cfg.UserManagement.Storage.Path = filepath.Join(t.TempDir(), "users.db")
+	cfg.AuthDir = t.TempDir()
 
-	server := NewServer(cfg, nil, sdkaccess.NewManager(), configPath)
+	authManager := coreauth.NewManager(nil, nil, nil)
+	server := NewServer(cfg, authManager, sdkaccess.NewManager(), configPath)
 	t.Cleanup(func() {
 		_ = server.Stop(context.Background())
 	})
+	if _, err := authManager.Register(coreauth.WithSkipPersist(context.Background()), &coreauth.Auth{
+		ID:       "quota-claude",
+		Provider: "claude",
+		FileName: "claude-user@example.test.json",
+		Label:    "Claude User",
+		Attributes: map[string]string{
+			"runtime_only": "true",
+		},
+		Metadata: map[string]any{
+			"email": "user@example.test",
+		},
+	}); err != nil {
+		t.Fatalf("Register auth error = %v", err)
+	}
 	admin := createServerPolicyUser(t, server.userStore)
 	if _, err := usermanagement.NewUserLifecycleService(server.userStore, server.userStore).AssignRole(t.Context(), admin.ID, usermanagement.UserRoleAdmin); err != nil {
 		t.Fatalf("AssignRole(admin) error = %v", err)
@@ -681,6 +698,44 @@ func TestManagementRoutesAcceptAdminSessionAndRejectOrdinaryUserSession(t *testi
 	server.engine.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("ordinary session status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	req.Header.Set("Authorization", "Bearer "+userSession.Token)
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("ordinary quota auth-files disabled status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+	}
+
+	cfg.UserManagement.Quota.AllowUserViewTotalRemaining = true
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	req.Header.Set("Authorization", "Bearer "+userSession.Token)
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ordinary quota auth-files status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var filesPayload struct {
+		Files []map[string]any `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &filesPayload); err != nil {
+		t.Fatalf("decode auth-files payload: %v", err)
+	}
+	if len(filesPayload.Files) != 1 {
+		t.Fatalf("auth-files count = %d, want 1; body = %s", len(filesPayload.Files), rec.Body.String())
+	}
+	if _, ok := filesPayload.Files[0]["path"]; ok {
+		t.Fatalf("ordinary auth-file entry leaked path: %#v", filesPayload.Files[0])
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(`{"method":"GET","url":"https://example.com/"}`))
+	req.Header.Set("Authorization", "Bearer "+userSession.Token)
+	req.Header.Set("Content-Type", "application/json")
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("ordinary arbitrary api-call status = %d, want 403; body = %s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
@@ -729,6 +784,24 @@ func TestAdminUserManagementSettingsToggleUpdatesConfigAndRuntime(t *testing.T) 
 	}
 
 	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v0/management/user-management/settings", strings.NewReader(`{"allow_user_view_total_remaining":true}`))
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("allow quota status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !server.cfg.UserManagement.Quota.AllowUserViewTotalRemaining {
+		t.Fatal("user-management.quota.allow-user-view-total-remaining was not enabled at runtime")
+	}
+	reloaded, err = config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !reloaded.UserManagement.Quota.AllowUserViewTotalRemaining {
+		t.Fatal("user-management.quota.allow-user-view-total-remaining was not persisted as true")
+	}
+
+	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPatch, "/v0/management/user-management/settings", strings.NewReader(`{"enabled":false}`))
 	req.Header.Set("Authorization", "Bearer test-management-key")
 	server.engine.ServeHTTP(rec, req)
@@ -752,6 +825,9 @@ func TestAdminUserManagementSettingsToggleUpdatesConfigAndRuntime(t *testing.T) 
 	}
 	if payload.Enabled {
 		t.Fatal("settings response enabled = true, want false")
+	}
+	if !payload.AllowUserViewTotalRemaining {
+		t.Fatal("settings response allow_user_view_total_remaining = false, want true")
 	}
 }
 

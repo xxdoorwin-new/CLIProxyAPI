@@ -362,6 +362,8 @@ type UserQuotaConfig struct {
 	DefaultMonthlyCredits int64 `yaml:"default-monthly-credits" json:"default-monthly-credits"`
 	// MissingUsageCredits is charged when a routed request completes without token usage metadata.
 	MissingUsageCredits int64 `yaml:"missing-usage-credits" json:"missing-usage-credits"`
+	// AllowUserViewTotalRemaining lets ordinary users view and refresh provider-level remaining quota.
+	AllowUserViewTotalRemaining bool `yaml:"allow-user-view-total-remaining" json:"allow-user-view-total-remaining"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.

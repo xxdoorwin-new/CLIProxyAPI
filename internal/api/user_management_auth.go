@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
@@ -14,8 +15,7 @@ func (s *Server) managementAccessMiddleware() gin.HandlerFunc {
 		c.Header("X-CPA-COMMIT", buildinfo.Commit)
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
 
-		if s.tryAdminSession(c) {
-			c.Set("managementAuth", "user_session")
+		if s.tryManagementUserSession(c) {
 			c.Next()
 			return
 		}
@@ -36,7 +36,7 @@ func (s *Server) managementAccessMiddleware() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) tryAdminSession(c *gin.Context) bool {
+func (s *Server) tryManagementUserSession(c *gin.Context) bool {
 	if s == nil || s.cfg == nil || !s.cfg.UserManagement.Enabled {
 		return false
 	}
@@ -54,12 +54,35 @@ func (s *Server) tryAdminSession(c *gin.Context) bool {
 	if err != nil {
 		return false
 	}
+	c.Set("userPrincipal", principal)
+	if principal.Role == usermanagement.UserRoleAdmin {
+		c.Set("managementAuth", "user_session")
+		return true
+	}
+	if s.cfg.UserManagement.Quota.AllowUserViewTotalRemaining && isOrdinaryUserManagementRoute(c) {
+		c.Set("managementAuth", "ordinary_user_session")
+		return true
+	}
 	if principal.Role != usermanagement.UserRoleAdmin {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin role required"})
 		return false
 	}
-	c.Set("userPrincipal", principal)
 	return true
+}
+
+func isOrdinaryUserManagementRoute(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	switch {
+	case c.Request.Method == http.MethodGet && path == "/v0/management/auth-files":
+		return true
+	case c.Request.Method == http.MethodPost && path == "/v0/management/api-call":
+		return true
+	default:
+		return false
+	}
 }
 
 func managementKeyFromRequest(c *gin.Context) string {

@@ -43,6 +43,7 @@ user-management:
     default-period: " MONTHLY "
     default-monthly-credits: -1
     missing-usage-credits: -5
+    allow-user-view-total-remaining: true
 `))
 	if errParse != nil {
 		t.Fatalf("ParseConfigBytes() error = %v", errParse)
@@ -71,5 +72,8 @@ user-management:
 	}
 	if cfg.UserManagement.Quota.MissingUsageCredits != 0 {
 		t.Fatalf("UserManagement.Quota.MissingUsageCredits = %d, want 0", cfg.UserManagement.Quota.MissingUsageCredits)
+	}
+	if !cfg.UserManagement.Quota.AllowUserViewTotalRemaining {
+		t.Fatal("UserManagement.Quota.AllowUserViewTotalRemaining = false, want true")
 	}
 }
