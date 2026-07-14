@@ -51,7 +51,9 @@ user-management:
     default-period: "monthly"
     # Default monthly credit limit for newly approved users. Zero means no default quota.
     default-monthly-credits: 0
-    # Credits charged when a routed request completes without token usage metadata.
+    # Credits charged when a request has no token usage metadata, or when the
+    # model has no pricing rule configured. Set to a non-zero value to ensure
+    # all requests consume quota even for unregistered models.
     missing-usage-credits: 0
 
 # Authentication directory (supports ~ for home directory)

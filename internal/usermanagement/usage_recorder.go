@@ -147,7 +147,9 @@ func (r *UsageRecorder) creditCost(ctx context.Context, model string, params Rec
 	}
 	breakdown, err := NewPricingService(r.store).CalculateCredits(ctx, facts)
 	if errors.Is(err, ErrNotFound) {
-		return 0, nil
+		// No pricing rule for this model; fall back to the same default used
+		// when token data is absent so unregistered models are still billed.
+		return r.missingUsageCredits, nil
 	}
 	if err != nil {
 		return 0, err
