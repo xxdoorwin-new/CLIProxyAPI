@@ -76,6 +76,7 @@ type PricingStore interface {
 type UsageLedgerStore interface {
 	AppendUsageLedgerRow(ctx context.Context, params CreateUsageLedgerRowParams) (*UsageLedgerRow, error)
 	ListUsageLedgerRows(ctx context.Context, filter UsageLedgerFilter) ([]UsageLedgerRow, error)
+	CountUsageLedgerRows(ctx context.Context, filter UsageLedgerFilter) (int64, error)
 	SumUsageCredits(ctx context.Context, userID UserID, from, to time.Time) (int64, error)
 }
 

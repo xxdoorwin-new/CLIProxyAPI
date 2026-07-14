@@ -148,6 +148,31 @@ func TestSQLiteStoreQueriesUsageAndUpdatesQuotaRollups(t *testing.T) {
 		t.Fatalf("failed usage rows = %#v, want request-2", rows)
 	}
 
+	count, err := store.CountUsageLedgerRows(ctx, UsageLedgerFilter{UserID: user.ID})
+	if err != nil {
+		t.Fatalf("CountUsageLedgerRows() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("CountUsageLedgerRows() = %d, want 2", count)
+	}
+
+	failedCount, err := store.CountUsageLedgerRows(ctx, UsageLedgerFilter{UserID: user.ID, Status: UsageStatusFailed})
+	if err != nil {
+		t.Fatalf("CountUsageLedgerRows(failed) error = %v", err)
+	}
+	if failedCount != 1 {
+		t.Fatalf("CountUsageLedgerRows(failed) = %d, want 1", failedCount)
+	}
+
+	otherUser := createTestUser(t, ctx, store)
+	otherCount, err := store.CountUsageLedgerRows(ctx, UsageLedgerFilter{UserID: otherUser.ID})
+	if err != nil {
+		t.Fatalf("CountUsageLedgerRows(otherUser) error = %v", err)
+	}
+	if otherCount != 0 {
+		t.Fatalf("CountUsageLedgerRows(otherUser) = %d, want 0", otherCount)
+	}
+
 	rollup, err := store.UpsertQuotaRollup(ctx, UpsertQuotaRollupParams{
 		UserID:       user.ID,
 		Period:       QuotaPeriodMonthly,

@@ -15,6 +15,7 @@ type UsageSummaryQuery struct {
 type UsageSummary struct {
 	Quota       QuotaSummary
 	RecentUsage []UsageLedgerRow
+	Total       int64
 }
 
 type UsageSummaryService struct {
@@ -59,8 +60,16 @@ func (s *UsageSummaryService) Summary(ctx context.Context, query UsageSummaryQue
 	if err != nil {
 		return nil, err
 	}
+	total, err := s.ledger.CountUsageLedgerRows(ctx, UsageLedgerFilter{
+		UserID:   query.UserID,
+		APIKeyID: query.APIKeyID,
+	})
+	if err != nil {
+		return nil, err
+	}
 	return &UsageSummary{
 		Quota:       *quota,
 		RecentUsage: rows,
+		Total:       total,
 	}, nil
 }

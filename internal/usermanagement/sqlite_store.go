@@ -720,6 +720,19 @@ func (s *SQLiteStore) ListUsageLedgerRows(ctx context.Context, filter UsageLedge
 	return ledger, nil
 }
 
+func (s *SQLiteStore) CountUsageLedgerRows(ctx context.Context, filter UsageLedgerFilter) (int64, error) {
+	where, args := usageLedgerWhere(filter)
+	query := "SELECT COUNT(*) FROM usage_ledger"
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("user management sqlite: count usage ledger: %w", err)
+	}
+	return total, nil
+}
+
 func (s *SQLiteStore) SumUsageCredits(ctx context.Context, userID UserID, from, to time.Time) (int64, error) {
 	filter := UsageLedgerFilter{UserID: userID, From: from, To: to}
 	where, args := usageLedgerWhere(filter)

@@ -58,6 +58,7 @@ type usageLedgerResponse struct {
 type usageSummaryResponse struct {
 	Quota       quotaSummaryResponse  `json:"quota"`
 	RecentUsage []usageLedgerResponse `json:"recent_usage"`
+	Total       int64                 `json:"total"`
 }
 
 func (s *Server) registerUserSessionRoutes() {
@@ -410,6 +411,7 @@ func toUsageSummaryResponse(summary *usermanagement.UsageSummary) usageSummaryRe
 	out := usageSummaryResponse{
 		Quota:       toQuotaSummaryResponse(&summary.Quota),
 		RecentUsage: make([]usageLedgerResponse, 0, len(summary.RecentUsage)),
+		Total:       summary.Total,
 	}
 	for i := range summary.RecentUsage {
 		out.RecentUsage = append(out.RecentUsage, toUsageLedgerResponse(&summary.RecentUsage[i]))
