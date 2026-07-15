@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const CurrentSQLiteSchemaVersion = 1
+const CurrentSQLiteSchemaVersion = 2
 
 type SQLiteMigration struct {
 	Version    int
@@ -121,6 +121,96 @@ var sqliteMigrations = []SQLiteMigration{
 				updated_at TEXT NOT NULL,
 				PRIMARY KEY(user_id, period, period_start)
 			)`,
+		},
+	},
+	{
+		Version: 2,
+		Name:    "retain_revoked_api_key_assignments",
+		Statements: []string{
+			`DROP INDEX IF EXISTS idx_usage_ledger_user_created`,
+			`DROP INDEX IF EXISTS idx_usage_ledger_api_key_created`,
+			`DROP INDEX IF EXISTS idx_usage_ledger_request_id`,
+			`DROP INDEX IF EXISTS idx_api_keys_user_id`,
+			`DROP INDEX IF EXISTS idx_api_keys_prefix`,
+			`ALTER TABLE usage_ledger RENAME TO usage_ledger_old`,
+			`ALTER TABLE api_keys RENAME TO api_keys_old`,
+			`CREATE TABLE api_keys (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				name TEXT NOT NULL,
+				key_hash BLOB NOT NULL,
+				prefix TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'revoked')),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				expires_at TEXT,
+				last_used_at TEXT
+			)`,
+			`INSERT INTO api_keys (
+				id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+			)
+			SELECT
+				id,
+				user_id,
+				name,
+				key_hash,
+				prefix,
+				CASE
+					WHEN status IN ('active', 'disabled') AND EXISTS (
+						SELECT 1
+						FROM api_keys_old newer
+						WHERE newer.user_id = api_keys_old.user_id
+							AND newer.status IN ('active', 'disabled')
+							AND (
+								newer.updated_at > api_keys_old.updated_at
+								OR (newer.updated_at = api_keys_old.updated_at AND newer.id > api_keys_old.id)
+							)
+					) THEN 'revoked'
+					ELSE status
+				END,
+				created_at,
+				updated_at,
+				expires_at,
+				last_used_at
+			FROM api_keys_old`,
+			`CREATE TABLE usage_ledger (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+				api_key_id TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+				request_id TEXT NOT NULL,
+				provider TEXT NOT NULL,
+				model TEXT NOT NULL,
+				model_alias TEXT NOT NULL DEFAULT '',
+				input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+				output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+				cached_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_tokens >= 0),
+				reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+				image_count INTEGER NOT NULL DEFAULT 0 CHECK (image_count >= 0),
+				credit_cost INTEGER NOT NULL DEFAULT 0 CHECK (credit_cost >= 0),
+				status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+				error_code TEXT NOT NULL DEFAULT '',
+				latency_millis INTEGER NOT NULL DEFAULT 0 CHECK (latency_millis >= 0),
+				created_at TEXT NOT NULL
+			)`,
+			`INSERT INTO usage_ledger (
+				id, user_id, api_key_id, request_id, provider, model, model_alias,
+				input_tokens, output_tokens, cached_tokens, reasoning_tokens, image_count,
+				credit_cost, status, error_code, latency_millis, created_at
+			)
+			SELECT
+				id, user_id, api_key_id, request_id, provider, model, model_alias,
+				input_tokens, output_tokens, cached_tokens, reasoning_tokens, image_count,
+				credit_cost, status, error_code, latency_millis, created_at
+			FROM usage_ledger_old`,
+			`DROP TABLE usage_ledger_old`,
+			`DROP TABLE api_keys_old`,
+			`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_current_user_id_unique ON api_keys(user_id) WHERE status <> 'revoked'`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_current_key_hash_unique ON api_keys(key_hash) WHERE status <> 'revoked'`,
+			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_user_created ON usage_ledger(user_id, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_api_key_created ON usage_ledger(api_key_id, created_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_request_id ON usage_ledger(request_id)`,
 		},
 	},
 }

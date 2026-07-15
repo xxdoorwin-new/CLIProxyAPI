@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usermanagement"
@@ -376,8 +377,8 @@ func TestAdminUserAPIKeyLifecycleRoutes(t *testing.T) {
 	}
 
 	rec = authRequest(http.MethodPost, "/v0/management/users/"+string(user.ID)+"/api-keys", `{"name":"default","configured_key_fingerprint":"`+configuredPayload.APIKeys[0].Fingerprint+`"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("bind key status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bind key status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	var keyPayload struct {
 		APIKey userAPIKeyResponse `json:"api_key"`
@@ -434,6 +435,116 @@ func TestAdminUserAPIKeyLifecycleRoutes(t *testing.T) {
 	rec = authRequest(http.MethodDelete, keyPath, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unbind key status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &keyPayload); err != nil {
+		t.Fatalf("decode unbind key response: %v", err)
+	}
+	if keyPayload.APIKey.Status != "revoked" {
+		t.Fatalf("unbound key = %#v, want revoked", keyPayload.APIKey)
+	}
+
+	rec = authRequest(http.MethodGet, "/v0/management/users/"+string(user.ID)+"/api-keys", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list after unbind status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list after unbind response: %v", err)
+	}
+	if len(listPayload.APIKeys) != 0 {
+		t.Fatalf("listed keys after unbind = %#v, want none", listPayload.APIKeys)
+	}
+}
+
+func TestAdminUserAPIKeyAssignmentReplaceAndConflictRoutes(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{}
+	cfg.APIKeys = []string{"assign-key-1", "assign-key-2", "assign-key-3"}
+	cfg.UserManagement.Enabled = true
+	cfg.UserManagement.Storage.Driver = config.DefaultUserManagementStorage
+	cfg.UserManagement.Storage.Path = filepath.Join(t.TempDir(), "users.db")
+
+	server := NewServer(cfg, nil, sdkaccess.NewManager(), configPath)
+	t.Cleanup(func() {
+		_ = server.Stop(context.Background())
+	})
+	user := createServerPolicyUser(t, server.userStore)
+	otherUser := createServerPolicyUser(t, server.userStore)
+
+	authRequest := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		server.engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := authRequest(http.MethodGet, "/v0/management/configured-api-keys?user_id="+string(user.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured keys status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var configuredPayload struct {
+		APIKeys []configuredAPIKeyResponse `json:"api_keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &configuredPayload); err != nil {
+		t.Fatalf("decode configured keys: %v", err)
+	}
+	if len(configuredPayload.APIKeys) != 3 || configuredPayload.APIKeys[0].State != "available" {
+		t.Fatalf("initial configured keys = %#v", configuredPayload.APIKeys)
+	}
+
+	bind := func(userID usermanagement.UserID, fingerprint, name string) userAPIKeyResponse {
+		t.Helper()
+		recBind := authRequest(http.MethodPost, "/v0/management/users/"+string(userID)+"/api-keys", `{"name":"`+name+`","configured_key_fingerprint":"`+fingerprint+`"}`)
+		if recBind.Code != http.StatusOK {
+			t.Fatalf("bind %s status = %d, want 200; body = %s", name, recBind.Code, recBind.Body.String())
+		}
+		var payload struct {
+			APIKey userAPIKeyResponse `json:"api_key"`
+		}
+		if err := json.Unmarshal(recBind.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode bind %s: %v", name, err)
+		}
+		return payload.APIKey
+	}
+
+	first := bind(user.ID, configuredPayload.APIKeys[0].Fingerprint, "first")
+	other := bind(otherUser.ID, configuredPayload.APIKeys[1].Fingerprint, "other")
+	replacement := bind(user.ID, configuredPayload.APIKeys[2].Fingerprint, "replacement")
+	if replacement.ID == first.ID {
+		t.Fatalf("replacement reused first id %q", replacement.ID)
+	}
+
+	rec = authRequest(http.MethodGet, "/v0/management/users/"+string(user.ID)+"/api-keys", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list current status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var currentPayload struct {
+		APIKeys []userAPIKeyResponse `json:"api_keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &currentPayload); err != nil {
+		t.Fatalf("decode current keys: %v", err)
+	}
+	if len(currentPayload.APIKeys) != 1 || currentPayload.APIKeys[0].ID != replacement.ID {
+		t.Fatalf("current keys = %#v, want replacement", currentPayload.APIKeys)
+	}
+
+	rec = authRequest(http.MethodPost, "/v0/management/users/"+string(otherUser.ID)+"/api-keys", `{"name":"conflict","configured_key_fingerprint":"`+configuredPayload.APIKeys[2].Fingerprint+`"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("occupied bind status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+	rec = authRequest(http.MethodGet, "/v0/management/configured-api-keys?user_id="+string(user.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured keys after assignment status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &configuredPayload); err != nil {
+		t.Fatalf("decode configured keys after assignment: %v", err)
+	}
+	if configuredPayload.APIKeys[0].State != "available" ||
+		configuredPayload.APIKeys[1].State != "assigned_to_other_user" ||
+		configuredPayload.APIKeys[1].AssignedKeyID != other.ID ||
+		configuredPayload.APIKeys[2].State != "assigned_to_selected_user" {
+		t.Fatalf("configured key states after assignment = %#v", configuredPayload.APIKeys)
 	}
 }
 
@@ -591,8 +702,8 @@ func TestUserRegistrationApprovalBindingAuthorizationQuotaIntegration(t *testing
 	}
 
 	rec = authRequest(http.MethodPost, "/v0/management/users/"+string(user.ID)+"/api-keys", `{"name":"integration","configured_key_fingerprint":"`+configuredPayload.APIKeys[0].Fingerprint+`"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("bind key status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bind key status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	var keyPayload struct {
 		APIKey userAPIKeyResponse `json:"api_key"`
@@ -1035,9 +1146,10 @@ func createServerPolicyUser(t *testing.T, store *usermanagement.SQLiteStore) *us
 	if err != nil {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
+	suffix := uuid.NewString()
 	user, err := store.CreateUser(t.Context(), usermanagement.CreateUserParams{
-		Username:     "server-user-" + time.Now().Format("150405.000000000"),
-		Email:        "server-user-" + time.Now().Format("150405.000000000") + "@example.test",
+		Username:     "server-user-" + suffix,
+		Email:        "server-user-" + suffix + "@example.test",
 		PasswordHash: hash,
 		Status:       usermanagement.UserStatusApproved,
 		Role:         usermanagement.UserRoleUser,

@@ -2,10 +2,11 @@ package usermanagement
 
 import (
 	"context"
+	"math"
 	"strings"
 )
 
-const tokensPerMillion = int64(1_000_000)
+const tokensPerMillion = float64(1_000_000)
 
 type PricingService struct {
 	pricing PricingStore
@@ -64,8 +65,8 @@ func CalculateCreditsWithRule(rule PricingRule, facts UsageFacts) *CreditBreakdo
 		OutputCredits:    ceilTokenCredits(facts.OutputTokens, rule.OutputCreditsPerMillionTokens),
 		CachedCredits:    ceilTokenCredits(facts.CachedTokens, rule.CachedCreditsPerMillionTokens),
 		ReasoningCredits: ceilTokenCredits(facts.ReasoningTokens, rule.ReasoningCreditsPerMillionTokens),
-		ImageCredits:     facts.ImageCount * rule.ImageCredits,
-		RequestCredits:   facts.RequestCount * rule.RequestCredits,
+		ImageCredits:     ceilUnitCredits(facts.ImageCount, rule.ImageCredits),
+		RequestCredits:   ceilUnitCredits(facts.RequestCount, rule.RequestCredits),
 	}
 	breakdown.TotalCredits = breakdown.InputCredits +
 		breakdown.OutputCredits +
@@ -91,10 +92,21 @@ func (f UsageFacts) Validate() error {
 	return nil
 }
 
-func ceilTokenCredits(tokens, creditsPerMillion int64) int64 {
+// ceilTokenCredits converts token usage into whole credits using a
+// per-million-token rate that may be fractional, rounding up so a request is
+// never undercharged.
+func ceilTokenCredits(tokens int64, creditsPerMillion float64) int64 {
 	if tokens <= 0 || creditsPerMillion <= 0 {
 		return 0
 	}
-	product := tokens * creditsPerMillion
-	return (product + tokensPerMillion - 1) / tokensPerMillion
+	return int64(math.Ceil(float64(tokens) * creditsPerMillion / tokensPerMillion))
+}
+
+// ceilUnitCredits converts a per-unit count (images, requests) into whole
+// credits using a rate that may be fractional, rounding up.
+func ceilUnitCredits(count int64, creditsPerUnit float64) int64 {
+	if count <= 0 || creditsPerUnit <= 0 {
+		return 0
+	}
+	return int64(math.Ceil(float64(count) * creditsPerUnit))
 }

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestSQLiteStoreCreatesUsersAndEnforcesUniqueIdentity(t *testing.T) {
@@ -204,6 +206,128 @@ func TestSQLiteStoreQueriesUsageAndUpdatesQuotaRollups(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreAssignAPIKeyMaintainsSingleCurrentAssignment(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	user := createTestUser(t, ctx, store)
+	otherUser := createTestUser(t, ctx, store)
+	firstHash := []byte("assign-hash-1")
+	secondHash := []byte("assign-hash-2")
+
+	first, err := store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  user.ID,
+		Name:    "first",
+		KeyHash: firstHash,
+		Prefix:  "cpak_first",
+	})
+	if err != nil {
+		t.Fatalf("AssignAPIKey(first) error = %v", err)
+	}
+	repeated, err := store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  user.ID,
+		Name:    "renamed",
+		KeyHash: firstHash,
+		Prefix:  "cpak_first",
+	})
+	if err != nil {
+		t.Fatalf("AssignAPIKey(repeated) error = %v", err)
+	}
+	if repeated.ID != first.ID || repeated.Name != "renamed" {
+		t.Fatalf("repeated assignment = %#v, want same id renamed", repeated)
+	}
+
+	second, err := store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  user.ID,
+		Name:    "second",
+		KeyHash: secondHash,
+		Prefix:  "cpak_second",
+	})
+	if err != nil {
+		t.Fatalf("AssignAPIKey(second) error = %v", err)
+	}
+	old, err := store.GetAPIKey(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey(first) error = %v", err)
+	}
+	if old.Status != APIKeyStatusRevoked {
+		t.Fatalf("first status = %q, want revoked", old.Status)
+	}
+	current, err := store.ListCurrentAPIKeysByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListCurrentAPIKeysByUser() error = %v", err)
+	}
+	if len(current) != 1 || current[0].ID != second.ID {
+		t.Fatalf("current keys = %#v, want only %q", current, second.ID)
+	}
+
+	_, err = store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  otherUser.ID,
+		Name:    "occupied",
+		KeyHash: secondHash,
+		Prefix:  "cpak_second",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AssignAPIKey(occupied) error = %v, want ErrConflict", err)
+	}
+
+	status := APIKeyStatusRevoked
+	if _, err = store.UpdateAPIKey(ctx, second.ID, UpdateAPIKeyParams{Status: &status}); err != nil {
+		t.Fatalf("UpdateAPIKey(revoke second) error = %v", err)
+	}
+	reused, err := store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  otherUser.ID,
+		Name:    "reused",
+		KeyHash: secondHash,
+		Prefix:  "cpak_second",
+	})
+	if err != nil {
+		t.Fatalf("AssignAPIKey(reused) error = %v", err)
+	}
+	if reused.UserID != otherUser.ID || reused.ID == second.ID {
+		t.Fatalf("reused assignment = %#v, want new assignment for other user", reused)
+	}
+}
+
+func TestSQLiteStoreUnbindPreservesUsageLedgerHistory(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	user := createTestUser(t, ctx, store)
+	key, err := store.AssignAPIKey(ctx, AssignAPIKeyParams{
+		UserID:  user.ID,
+		Name:    "usage",
+		KeyHash: []byte("usage-retained-hash"),
+		Prefix:  "cpak_usage_retained",
+	})
+	if err != nil {
+		t.Fatalf("AssignAPIKey() error = %v", err)
+	}
+	_, err = store.AppendUsageLedgerRow(ctx, CreateUsageLedgerRowParams{
+		UserID:     user.ID,
+		APIKeyID:   key.ID,
+		RequestID:  "request-retained",
+		Provider:   "openai",
+		Model:      "gpt-5",
+		CreditCost: 5,
+		Status:     UsageStatusSucceeded,
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("AppendUsageLedgerRow() error = %v", err)
+	}
+
+	status := APIKeyStatusRevoked
+	if _, err = store.UpdateAPIKey(ctx, key.ID, UpdateAPIKeyParams{Status: &status}); err != nil {
+		t.Fatalf("UpdateAPIKey(revoke) error = %v", err)
+	}
+	rows, err := store.ListUsageLedgerRows(ctx, UsageLedgerFilter{UserID: user.ID, APIKeyID: key.ID})
+	if err != nil {
+		t.Fatalf("ListUsageLedgerRows() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].RequestID != "request-retained" {
+		t.Fatalf("usage rows = %#v, want retained request", rows)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	store, err := OpenSQLiteStore(context.Background(), SQLiteConfig{
@@ -222,9 +346,10 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 
 func createTestUser(t *testing.T, ctx context.Context, store *SQLiteStore) *User {
 	t.Helper()
+	suffix := uuid.NewString()
 	user, err := store.CreateUser(ctx, CreateUserParams{
-		Username:     "user-" + time.Now().Format("150405.000000000"),
-		Email:        "user-" + time.Now().Format("150405.000000000") + "@example.test",
+		Username:     "user-" + suffix,
+		Email:        "user-" + suffix + "@example.test",
 		PasswordHash: []byte("password-hash"),
 		Status:       UserStatusApproved,
 		Role:         UserRoleUser,

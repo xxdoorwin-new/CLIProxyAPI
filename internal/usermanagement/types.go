@@ -136,6 +136,14 @@ type CreateAPIKeyParams struct {
 	ExpiresAt *time.Time
 }
 
+type AssignAPIKeyParams struct {
+	UserID    UserID
+	Name      string
+	KeyHash   []byte
+	Prefix    string
+	ExpiresAt *time.Time
+}
+
 type UpdateAPIKeyParams struct {
 	Name       *string
 	KeyHash    []byte
@@ -181,27 +189,28 @@ type SetQuotaPolicyParams struct {
 	LimitCredits int64
 }
 
-// PricingRule converts raw usage facts into credit costs.
+// PricingRule converts raw usage facts into credit costs. Rates may be
+// fractional; the per-request credit total is rounded up to a whole credit.
 type PricingRule struct {
 	Model                            string
-	InputCreditsPerMillionTokens     int64
-	OutputCreditsPerMillionTokens    int64
-	CachedCreditsPerMillionTokens    int64
-	ReasoningCreditsPerMillionTokens int64
-	ImageCredits                     int64
-	RequestCredits                   int64
+	InputCreditsPerMillionTokens     float64
+	OutputCreditsPerMillionTokens    float64
+	CachedCreditsPerMillionTokens    float64
+	ReasoningCreditsPerMillionTokens float64
+	ImageCredits                     float64
+	RequestCredits                   float64
 	CreatedAt                        time.Time
 	UpdatedAt                        time.Time
 }
 
 type SetPricingRuleParams struct {
 	Model                            string
-	InputCreditsPerMillionTokens     int64
-	OutputCreditsPerMillionTokens    int64
-	CachedCreditsPerMillionTokens    int64
-	ReasoningCreditsPerMillionTokens int64
-	ImageCredits                     int64
-	RequestCredits                   int64
+	InputCreditsPerMillionTokens     float64
+	OutputCreditsPerMillionTokens    float64
+	CachedCreditsPerMillionTokens    float64
+	ReasoningCreditsPerMillionTokens float64
+	ImageCredits                     float64
+	RequestCredits                   float64
 }
 
 type UsageLedgerRow struct {

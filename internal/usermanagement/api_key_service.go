@@ -35,15 +35,19 @@ type APIKeyMetadata struct {
 }
 
 type ConfiguredAPIKeySelection struct {
-	Fingerprint       string
-	Prefix            string
-	Assigned          bool
-	AssignedUserID    UserID
-	AssignedKeyID     APIKeyID
-	AssignedKeyName   string
-	AssignedStatus    APIKeyStatus
-	LastUsedAt        *time.Time
-	ConfiguredPresent bool
+	Fingerprint         string
+	Prefix              string
+	State               string
+	Assigned            bool
+	AssignedUserID      UserID
+	AssignedUsername    string
+	AssignedDisplayName string
+	AssignedKeyID       APIKeyID
+	AssignedKeyName     string
+	AssignedStatus      APIKeyStatus
+	SelectedUserID      UserID
+	LastUsedAt          *time.Time
+	ConfiguredPresent   bool
 }
 
 func NewUserAPIKeyService(users UserStore, keys APIKeyStore, configuredKeys ...[]string) *UserAPIKeyService {
@@ -73,12 +77,11 @@ func (s *UserAPIKeyService) BindKey(ctx context.Context, req BindUserAPIKeyReque
 	if name == "" {
 		name = ref.Prefix
 	}
-	key, err := s.keys.CreateAPIKey(ctx, CreateAPIKeyParams{
+	key, err := s.keys.AssignAPIKey(ctx, AssignAPIKeyParams{
 		UserID:    req.UserID,
 		Name:      name,
 		KeyHash:   fingerprint,
 		Prefix:    ref.Prefix,
-		Status:    APIKeyStatusActive,
 		ExpiresAt: req.ExpiresAt,
 	})
 	if err != nil {
@@ -105,11 +108,13 @@ func (s *UserAPIKeyService) EnableKey(ctx context.Context, id APIKeyID) (*APIKey
 }
 
 func (s *UserAPIKeyService) UnbindKey(ctx context.Context, id APIKeyID) error {
-	return s.keys.DeleteAPIKey(ctx, id)
+	status := APIKeyStatusRevoked
+	_, err := s.keys.UpdateAPIKey(ctx, id, UpdateAPIKeyParams{Status: &status})
+	return err
 }
 
 func (s *UserAPIKeyService) ListKeyMetadataByUser(ctx context.Context, userID UserID) ([]APIKeyMetadata, error) {
-	keys, err := s.keys.ListAPIKeysByUser(ctx, userID)
+	keys, err := s.keys.ListCurrentAPIKeysByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +126,10 @@ func (s *UserAPIKeyService) ListKeyMetadataByUser(ctx context.Context, userID Us
 }
 
 func (s *UserAPIKeyService) ListConfiguredAPIKeys(ctx context.Context) ([]ConfiguredAPIKeySelection, error) {
+	return s.ListConfiguredAPIKeysForUser(ctx, "")
+}
+
+func (s *UserAPIKeyService) ListConfiguredAPIKeysForUser(ctx context.Context, selectedUserID UserID) ([]ConfiguredAPIKeySelection, error) {
 	if s == nil || s.keys == nil {
 		return nil, ErrInvalid
 	}
@@ -130,13 +139,15 @@ func (s *UserAPIKeyService) ListConfiguredAPIKeys(ctx context.Context) ([]Config
 		if err != nil {
 			return nil, err
 		}
-		bindings, err := s.keys.FindAPIKeyByFingerprint(ctx, fingerprint)
+		bindings, err := s.keys.FindCurrentAPIKeyByFingerprint(ctx, fingerprint)
 		if err != nil {
 			return nil, err
 		}
 		selection := ConfiguredAPIKeySelection{
 			Fingerprint:       ref.Fingerprint,
 			Prefix:            ref.Prefix,
+			State:             "available",
+			SelectedUserID:    selectedUserID,
 			ConfiguredPresent: true,
 		}
 		if len(bindings) > 0 {
@@ -147,6 +158,17 @@ func (s *UserAPIKeyService) ListConfiguredAPIKeys(ctx context.Context) ([]Config
 			selection.AssignedKeyName = binding.Name
 			selection.AssignedStatus = binding.Status
 			selection.LastUsedAt = binding.LastUsedAt
+			if selectedUserID != "" && binding.UserID == selectedUserID {
+				selection.State = "assigned_to_selected_user"
+			} else {
+				selection.State = "assigned_to_other_user"
+			}
+			if s.users != nil {
+				if user, errUser := s.users.GetUser(ctx, binding.UserID); errUser == nil {
+					selection.AssignedUsername = user.Username
+					selection.AssignedDisplayName = user.DisplayName
+				}
+			}
 		}
 		selections = append(selections, selection)
 	}

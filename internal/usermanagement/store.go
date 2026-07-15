@@ -47,10 +47,13 @@ type SessionStore interface {
 
 type APIKeyStore interface {
 	CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (*APIKey, error)
+	AssignAPIKey(ctx context.Context, params AssignAPIKeyParams) (*APIKey, error)
 	GetAPIKey(ctx context.Context, id APIKeyID) (*APIKey, error)
 	ListAPIKeysByUser(ctx context.Context, userID UserID) ([]APIKey, error)
+	ListCurrentAPIKeysByUser(ctx context.Context, userID UserID) ([]APIKey, error)
 	FindAPIKeyByPrefix(ctx context.Context, prefix string) ([]APIKey, error)
 	FindAPIKeyByFingerprint(ctx context.Context, fingerprint []byte) ([]APIKey, error)
+	FindCurrentAPIKeyByFingerprint(ctx context.Context, fingerprint []byte) ([]APIKey, error)
 	UpdateAPIKey(ctx context.Context, id APIKeyID, params UpdateAPIKeyParams) (*APIKey, error)
 	DeleteAPIKey(ctx context.Context, id APIKeyID) error
 }

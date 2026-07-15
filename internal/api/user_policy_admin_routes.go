@@ -28,12 +28,12 @@ type quotaPolicyResponse struct {
 
 type pricingRuleResponse struct {
 	Model                            string    `json:"model"`
-	InputCreditsPerMillionTokens     int64     `json:"input_credits_per_million_tokens"`
-	OutputCreditsPerMillionTokens    int64     `json:"output_credits_per_million_tokens"`
-	CachedCreditsPerMillionTokens    int64     `json:"cached_credits_per_million_tokens"`
-	ReasoningCreditsPerMillionTokens int64     `json:"reasoning_credits_per_million_tokens"`
-	ImageCredits                     int64     `json:"image_credits"`
-	RequestCredits                   int64     `json:"request_credits"`
+	InputCreditsPerMillionTokens     float64   `json:"input_credits_per_million_tokens"`
+	OutputCreditsPerMillionTokens    float64   `json:"output_credits_per_million_tokens"`
+	CachedCreditsPerMillionTokens    float64   `json:"cached_credits_per_million_tokens"`
+	ReasoningCreditsPerMillionTokens float64   `json:"reasoning_credits_per_million_tokens"`
+	ImageCredits                     float64   `json:"image_credits"`
+	RequestCredits                   float64   `json:"request_credits"`
 	CreatedAt                        time.Time `json:"created_at"`
 	UpdatedAt                        time.Time `json:"updated_at"`
 }
@@ -177,13 +177,13 @@ func (s *Server) handleAdminSetPricingRule(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Model                            string `json:"model"`
-		InputCreditsPerMillionTokens     int64  `json:"input_credits_per_million_tokens"`
-		OutputCreditsPerMillionTokens    int64  `json:"output_credits_per_million_tokens"`
-		CachedCreditsPerMillionTokens    int64  `json:"cached_credits_per_million_tokens"`
-		ReasoningCreditsPerMillionTokens int64  `json:"reasoning_credits_per_million_tokens"`
-		ImageCredits                     int64  `json:"image_credits"`
-		RequestCredits                   int64  `json:"request_credits"`
+		Model                            string  `json:"model"`
+		InputCreditsPerMillionTokens     float64 `json:"input_credits_per_million_tokens"`
+		OutputCreditsPerMillionTokens    float64 `json:"output_credits_per_million_tokens"`
+		CachedCreditsPerMillionTokens    float64 `json:"cached_credits_per_million_tokens"`
+		ReasoningCreditsPerMillionTokens float64 `json:"reasoning_credits_per_million_tokens"`
+		ImageCredits                     float64 `json:"image_credits"`
+		RequestCredits                   float64 `json:"request_credits"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})

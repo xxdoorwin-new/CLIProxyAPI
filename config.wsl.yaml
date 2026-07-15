@@ -38,6 +38,7 @@ user-management:
     default-period: "monthly"
     default-monthly-credits: 100
     missing-usage-credits: 1
+    allow-user-view-total-remaining: true
 # Authentication directory (supports ~ for home directory)
 auth-dir: "/home/doorwin/.cli-proxy-api"
 # API keys for authentication

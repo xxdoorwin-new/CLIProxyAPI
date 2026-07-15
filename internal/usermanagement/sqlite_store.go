@@ -295,6 +295,86 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, params CreateAPIKeyParam
 	return key, nil
 }
 
+func (s *SQLiteStore) AssignAPIKey(ctx context.Context, params AssignAPIKeyParams) (*APIKey, error) {
+	if err := params.Validate(); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("user management sqlite: begin api key assignment transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC()
+	keyHash := append([]byte(nil), params.KeyHash...)
+	name := strings.TrimSpace(params.Name)
+	prefix := strings.TrimSpace(params.Prefix)
+
+	current, err := scanAPIKey(tx.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+		FROM api_keys WHERE key_hash = ? AND status <> ? ORDER BY updated_at DESC, id DESC LIMIT 1`, keyHash, APIKeyStatusRevoked))
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if current != nil {
+		if current.UserID != params.UserID {
+			return nil, ErrConflict
+		}
+		status := APIKeyStatusActive
+		_, err = tx.ExecContext(ctx, `UPDATE api_keys
+			SET name = ?, prefix = ?, key_hash = ?, status = ?, expires_at = ?, updated_at = ?
+			WHERE id = ?`,
+			name, prefix, keyHash, status, formatOptionalTime(params.ExpiresAt), formatTime(now), current.ID)
+		if err != nil {
+			return nil, mapSQLiteWriteError(err)
+		}
+		assigned, errGet := scanAPIKey(tx.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+			FROM api_keys WHERE id = ?`, current.ID))
+		if errGet != nil {
+			return nil, errGet
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, fmt.Errorf("user management sqlite: commit api key assignment transaction: %w", err)
+		}
+		return assigned, nil
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE api_keys
+		SET status = ?, updated_at = ?
+		WHERE user_id = ? AND status <> ?`,
+		APIKeyStatusRevoked, formatTime(now), params.UserID, APIKeyStatusRevoked)
+	if err != nil {
+		return nil, mapSQLiteWriteError(err)
+	}
+
+	key := &APIKey{
+		ID:        APIKeyID(uuid.NewString()),
+		UserID:    params.UserID,
+		Name:      name,
+		KeyHash:   keyHash,
+		Prefix:    prefix,
+		Status:    APIKeyStatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+		ExpiresAt: params.ExpiresAt,
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys (
+		id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.UserID, key.Name, key.KeyHash, key.Prefix, key.Status, formatTime(key.CreatedAt), formatTime(key.UpdatedAt), formatOptionalTime(key.ExpiresAt),
+	)
+	if err != nil {
+		mapped := mapSQLiteWriteError(err)
+		if errors.Is(mapped, ErrAlreadyExists) {
+			return nil, ErrConflict
+		}
+		return nil, mapped
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("user management sqlite: commit api key assignment transaction: %w", err)
+	}
+	return key, nil
+}
+
 func (s *SQLiteStore) GetAPIKey(ctx context.Context, id APIKeyID) (*APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
 		FROM api_keys WHERE id = ?`, id)
@@ -318,6 +398,27 @@ func (s *SQLiteStore) ListAPIKeysByUser(ctx context.Context, userID UserID) ([]A
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("user management sqlite: iterate api keys: %w", err)
+	}
+	return keys, nil
+}
+
+func (s *SQLiteStore) ListCurrentAPIKeysByUser(ctx context.Context, userID UserID) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+		FROM api_keys WHERE user_id = ? AND status <> ? ORDER BY updated_at DESC, id DESC`, userID, APIKeyStatusRevoked)
+	if err != nil {
+		return nil, fmt.Errorf("user management sqlite: list current api keys: %w", err)
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		key, errScan := scanAPIKey(rows)
+		if errScan != nil {
+			return nil, errScan
+		}
+		keys = append(keys, *key)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("user management sqlite: iterate current api keys: %w", err)
 	}
 	return keys, nil
 }
@@ -360,6 +461,27 @@ func (s *SQLiteStore) FindAPIKeyByFingerprint(ctx context.Context, fingerprint [
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("user management sqlite: iterate api keys: %w", err)
+	}
+	return keys, nil
+}
+
+func (s *SQLiteStore) FindCurrentAPIKeyByFingerprint(ctx context.Context, fingerprint []byte) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, key_hash, prefix, status, created_at, updated_at, expires_at, last_used_at
+		FROM api_keys WHERE key_hash = ? AND status <> ? ORDER BY updated_at DESC, id DESC`, fingerprint, APIKeyStatusRevoked)
+	if err != nil {
+		return nil, fmt.Errorf("user management sqlite: find current api keys by fingerprint: %w", err)
+	}
+	defer rows.Close()
+	var keys []APIKey
+	for rows.Next() {
+		key, errScan := scanAPIKey(rows)
+		if errScan != nil {
+			return nil, errScan
+		}
+		keys = append(keys, *key)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("user management sqlite: iterate current api keys: %w", err)
 	}
 	return keys, nil
 }

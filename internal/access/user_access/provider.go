@@ -87,7 +87,7 @@ func (p *Provider) authenticateCandidate(ctx context.Context, candidate credenti
 	if _, ok := p.configured[fingerprintHex]; !ok {
 		return nil, sdkaccess.NewInvalidCredentialError()
 	}
-	keys, err := p.keys.FindAPIKeyByFingerprint(ctx, fingerprint)
+	keys, err := p.keys.FindCurrentAPIKeyByFingerprint(ctx, fingerprint)
 	if err != nil {
 		return nil, sdkaccess.NewInternalAuthError("User API key lookup failed", err)
 	}

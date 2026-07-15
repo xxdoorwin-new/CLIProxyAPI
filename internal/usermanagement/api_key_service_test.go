@@ -89,8 +89,111 @@ func TestUserAPIKeyServiceDisableEnableAndUnbind(t *testing.T) {
 	if err = service.UnbindKey(ctx, key.ID); err != nil {
 		t.Fatalf("UnbindKey() error = %v", err)
 	}
-	if _, err = store.GetAPIKey(ctx, key.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetAPIKey() after unbind error = %v, want ErrNotFound", err)
+	unbound, err := store.GetAPIKey(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey() after unbind error = %v", err)
+	}
+	if unbound.Status != APIKeyStatusRevoked {
+		t.Fatalf("Status after unbind = %q, want revoked", unbound.Status)
+	}
+}
+
+func TestUserAPIKeyServiceAssignsSingleCurrentKeyAndPreservesHistory(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	user := createTestUser(t, ctx, store)
+	configuredKeys := []string{"configured-replace-1", "configured-replace-2"}
+	service := NewUserAPIKeyService(store, store, configuredKeys)
+
+	first, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "first",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKeys[0]),
+	})
+	if err != nil {
+		t.Fatalf("BindKey(first) error = %v", err)
+	}
+	second, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   user.ID,
+		Name:                     "second",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKeys[1]),
+	})
+	if err != nil {
+		t.Fatalf("BindKey(second) error = %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("replacement reused old assignment id %q", second.ID)
+	}
+
+	history, err := store.ListAPIKeysByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListAPIKeysByUser() error = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history count = %d, want 2", len(history))
+	}
+	current, err := service.ListKeyMetadataByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListKeyMetadataByUser() error = %v", err)
+	}
+	if len(current) != 1 || current[0].ID != second.ID {
+		t.Fatalf("current metadata = %#v, want only second assignment", current)
+	}
+	old, err := store.GetAPIKey(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey(first) error = %v", err)
+	}
+	if old.Status != APIKeyStatusRevoked {
+		t.Fatalf("first status = %q, want revoked", old.Status)
+	}
+}
+
+func TestUserAPIKeyServiceRejectsOccupiedKeyAndKeepsExistingAssignment(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	owner := createTestUser(t, ctx, store)
+	other := createTestUser(t, ctx, store)
+	configuredKeys := []string{"configured-owned", "configured-other"}
+	service := NewUserAPIKeyService(store, store, configuredKeys)
+
+	owned, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   owner.ID,
+		Name:                     "owned",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKeys[0]),
+	})
+	if err != nil {
+		t.Fatalf("BindKey(owner) error = %v", err)
+	}
+	otherCurrent, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   other.ID,
+		Name:                     "other",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKeys[1]),
+	})
+	if err != nil {
+		t.Fatalf("BindKey(other) error = %v", err)
+	}
+
+	_, err = service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   other.ID,
+		Name:                     "conflict",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(configuredKeys[0]),
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("BindKey(occupied) error = %v, want ErrConflict", err)
+	}
+	current, err := service.ListKeyMetadataByUser(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("ListKeyMetadataByUser(other) error = %v", err)
+	}
+	if len(current) != 1 || current[0].ID != otherCurrent.ID {
+		t.Fatalf("other current = %#v, want unchanged %q", current, otherCurrent.ID)
+	}
+	ownerCurrent, err := service.ListKeyMetadataByUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListKeyMetadataByUser(owner) error = %v", err)
+	}
+	if len(ownerCurrent) != 1 || ownerCurrent[0].ID != owned.ID {
+		t.Fatalf("owner current = %#v, want unchanged %q", ownerCurrent, owned.ID)
 	}
 }
 
@@ -128,9 +231,11 @@ func TestUserAPIKeyServiceListsConfiguredSelectionAndMissingBinding(t *testing.T
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
 	user := createTestUser(t, ctx, store)
+	otherUser := createTestUser(t, ctx, store)
 	boundKey := "configured-key-4"
 	unboundKey := "configured-key-5"
-	service := NewUserAPIKeyService(store, store, []string{boundKey, unboundKey})
+	occupiedKey := "configured-key-6"
+	service := NewUserAPIKeyService(store, store, []string{boundKey, unboundKey, occupiedKey})
 
 	binding, err := service.BindKey(ctx, BindUserAPIKeyRequest{
 		UserID:                   user.ID,
@@ -140,19 +245,30 @@ func TestUserAPIKeyServiceListsConfiguredSelectionAndMissingBinding(t *testing.T
 	if err != nil {
 		t.Fatalf("BindKey() error = %v", err)
 	}
+	occupied, err := service.BindKey(ctx, BindUserAPIKeyRequest{
+		UserID:                   otherUser.ID,
+		Name:                     "occupied",
+		ConfiguredKeyFingerprint: ConfiguredAPIKeyFingerprintHex(occupiedKey),
+	})
+	if err != nil {
+		t.Fatalf("BindKey(occupied) error = %v", err)
+	}
 
-	selections, err := service.ListConfiguredAPIKeys(ctx)
+	selections, err := service.ListConfiguredAPIKeysForUser(ctx, user.ID)
 	if err != nil {
 		t.Fatalf("ListConfiguredAPIKeys() error = %v", err)
 	}
-	if len(selections) != 2 {
-		t.Fatalf("selection count = %d, want 2", len(selections))
+	if len(selections) != 3 {
+		t.Fatalf("selection count = %d, want 3", len(selections))
 	}
-	if !selections[0].Assigned || selections[0].AssignedKeyID != binding.ID || selections[0].AssignedUserID != user.ID {
+	if !selections[0].Assigned || selections[0].AssignedKeyID != binding.ID || selections[0].AssignedUserID != user.ID || selections[0].State != "assigned_to_selected_user" {
 		t.Fatalf("bound selection = %#v", selections[0])
 	}
 	if selections[1].Assigned || !selections[1].ConfiguredPresent {
 		t.Fatalf("unbound selection = %#v", selections[1])
+	}
+	if !selections[2].Assigned || selections[2].AssignedKeyID != occupied.ID || selections[2].State != "assigned_to_other_user" || selections[2].AssignedUsername == "" {
+		t.Fatalf("occupied selection = %#v", selections[2])
 	}
 
 	missingService := NewUserAPIKeyService(store, store, []string{unboundKey})

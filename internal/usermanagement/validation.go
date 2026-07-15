@@ -114,6 +114,22 @@ func (p CreateAPIKeyParams) Validate() error {
 	return nil
 }
 
+func (p AssignAPIKeyParams) Validate() error {
+	if p.UserID == "" {
+		return invalid("user id is required")
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return invalid("key name is required")
+	}
+	if len(p.KeyHash) == 0 {
+		return invalid("key hash is required")
+	}
+	if strings.TrimSpace(p.Prefix) == "" {
+		return invalid("key prefix is required")
+	}
+	return nil
+}
+
 func (p SetModelPolicyParams) Validate() error {
 	if !p.SubjectType.IsValid() {
 		return invalid("invalid policy subject type %q", p.SubjectType)

@@ -58,6 +58,21 @@ func TestCalculateCreditsWithRuleZeroUsageIsFree(t *testing.T) {
 	}
 }
 
+func TestCalculateCreditsWithRuleFractionalRatesCeilPerCategory(t *testing.T) {
+	breakdown := CalculateCreditsWithRule(PricingRule{
+		Model:                        "gpt-5",
+		InputCreditsPerMillionTokens: 2.5,
+		ImageCredits:                 0.5,
+	}, UsageFacts{
+		Model:       "gpt-5",
+		InputTokens: 1_000_000, // 1M * 2.5 / 1M = 2.5 -> ceil 3
+		ImageCount:  1,         // 1 * 0.5 = 0.5 -> ceil 1
+	})
+	if breakdown.InputCredits != 3 || breakdown.ImageCredits != 1 || breakdown.TotalCredits != 4 {
+		t.Fatalf("breakdown = %#v", breakdown)
+	}
+}
+
 func TestPricingServiceRejectsNegativeUsageFacts(t *testing.T) {
 	err := UsageFacts{Model: "gpt-5", InputTokens: -1}.Validate()
 	if !errors.Is(err, ErrInvalid) {

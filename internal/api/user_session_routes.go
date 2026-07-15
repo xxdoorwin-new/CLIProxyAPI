@@ -454,6 +454,8 @@ func writeUserManagementError(c *gin.Context, err error) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 	case errors.Is(err, usermanagement.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	case errors.Is(err, usermanagement.ErrConflict):
+		c.JSON(http.StatusConflict, gin.H{"error": "conflict"})
 	case errors.Is(err, usermanagement.ErrAlreadyExists):
 		c.JSON(http.StatusConflict, gin.H{"error": "already exists"})
 	default:
