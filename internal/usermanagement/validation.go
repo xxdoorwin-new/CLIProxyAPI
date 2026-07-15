@@ -198,6 +198,7 @@ func (p CreateUsageLedgerRowParams) Validate() error {
 		p.OutputTokens < 0 ||
 		p.CachedTokens < 0 ||
 		p.ReasoningTokens < 0 ||
+		p.TotalTokens < 0 ||
 		p.ImageCount < 0 ||
 		p.CreditCost < 0 ||
 		p.LatencyMillis < 0 {

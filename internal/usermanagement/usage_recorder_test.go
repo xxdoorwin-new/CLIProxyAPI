@@ -38,6 +38,7 @@ func TestUsageRecorderWritesLedgerAndRollup(t *testing.T) {
 		ModelAlias:   "codex-pro",
 		InputTokens:  2,
 		OutputTokens: 3,
+		TotalTokens:  5,
 		Latency:      1500 * time.Millisecond,
 		RequestedAt:  time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC),
 	})
@@ -52,6 +53,9 @@ func TestUsageRecorderWritesLedgerAndRollup(t *testing.T) {
 	}
 	if result.Ledger.ModelAlias != "codex-pro" || result.Ledger.LatencyMillis != 1500 {
 		t.Fatalf("ledger facts = %#v", result.Ledger)
+	}
+	if result.Ledger.TotalTokens != 5 {
+		t.Fatalf("TotalTokens = %d, want 5", result.Ledger.TotalTokens)
 	}
 	if result.Rollup.UsedCredits != 11 || result.Rollup.LimitCredits != 100 {
 		t.Fatalf("rollup = %#v, want used=11 limit=100", result.Rollup)

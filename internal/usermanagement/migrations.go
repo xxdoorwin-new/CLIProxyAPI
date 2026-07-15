@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const CurrentSQLiteSchemaVersion = 2
+const CurrentSQLiteSchemaVersion = 3
 
 type SQLiteMigration struct {
 	Version    int
@@ -211,6 +211,14 @@ var sqliteMigrations = []SQLiteMigration{
 			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_user_created ON usage_ledger(user_id, created_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_api_key_created ON usage_ledger(api_key_id, created_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_request_id ON usage_ledger(request_id)`,
+		},
+	},
+	{
+		Version: 3,
+		Name:    "add_usage_total_tokens_reporting_index",
+		Statements: []string{
+			`ALTER TABLE usage_ledger ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0)`,
+			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_created ON usage_ledger(created_at)`,
 		},
 	},
 }

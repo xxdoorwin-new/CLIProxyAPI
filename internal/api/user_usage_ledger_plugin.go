@@ -55,6 +55,7 @@ func (p *userUsageLedgerPlugin) HandleUsage(ctx context.Context, record coreusag
 		OutputTokens:    record.Detail.OutputTokens,
 		CachedTokens:    normalizedCachedTokens(record.Detail),
 		ReasoningTokens: record.Detail.ReasoningTokens,
+		TotalTokens:     record.Detail.TotalTokens,
 		Failed:          record.Failed || statusCode >= http.StatusBadRequest,
 		ErrorCode:       usageErrorCode(record, statusCode),
 		HTTPStatusCode:  statusCode,

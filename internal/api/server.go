@@ -680,6 +680,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/users/:id/quota-policy", s.handleAdminSetUserQuotaPolicy)
 		mgmt.GET("/users/:id/quota-summary", s.handleAdminGetUserQuotaSummary)
 		mgmt.GET("/users/:id/usage", s.handleAdminGetUserUsage)
+		mgmt.GET("/traffic-statistics", s.handleAdminTrafficStatistics)
 		mgmt.GET("/pricing-rules", s.handleAdminListPricingRules)
 		mgmt.PUT("/pricing-rules", s.handleAdminSetPricingRule)
 		mgmt.DELETE("/pricing-rules", s.handleAdminDeletePricingRule)

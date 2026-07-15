@@ -701,6 +701,7 @@ func (s *SQLiteStore) AppendUsageLedgerRow(ctx context.Context, params CreateUsa
 		OutputTokens:    params.OutputTokens,
 		CachedTokens:    params.CachedTokens,
 		ReasoningTokens: params.ReasoningTokens,
+		TotalTokens:     params.TotalTokens,
 		ImageCount:      params.ImageCount,
 		CreditCost:      params.CreditCost,
 		Status:          params.Status,
@@ -710,11 +711,11 @@ func (s *SQLiteStore) AppendUsageLedgerRow(ctx context.Context, params CreateUsa
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO usage_ledger (
 		id, user_id, api_key_id, request_id, provider, model, model_alias,
-		input_tokens, output_tokens, cached_tokens, reasoning_tokens, image_count,
+		input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, image_count,
 		credit_cost, status, error_code, latency_millis, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ID, row.UserID, row.APIKeyID, row.RequestID, row.Provider, row.Model, row.ModelAlias,
-		row.InputTokens, row.OutputTokens, row.CachedTokens, row.ReasoningTokens, row.ImageCount,
+		row.InputTokens, row.OutputTokens, row.CachedTokens, row.ReasoningTokens, row.TotalTokens, row.ImageCount,
 		row.CreditCost, row.Status, row.ErrorCode, row.LatencyMillis, formatTime(row.CreatedAt),
 	)
 	if err != nil {
@@ -745,6 +746,7 @@ func (s *SQLiteStore) AppendUsageLedgerRowWithRollup(ctx context.Context, params
 		OutputTokens:    params.Ledger.OutputTokens,
 		CachedTokens:    params.Ledger.CachedTokens,
 		ReasoningTokens: params.Ledger.ReasoningTokens,
+		TotalTokens:     params.Ledger.TotalTokens,
 		ImageCount:      params.Ledger.ImageCount,
 		CreditCost:      params.Ledger.CreditCost,
 		Status:          params.Ledger.Status,
@@ -754,11 +756,11 @@ func (s *SQLiteStore) AppendUsageLedgerRowWithRollup(ctx context.Context, params
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_ledger (
 		id, user_id, api_key_id, request_id, provider, model, model_alias,
-		input_tokens, output_tokens, cached_tokens, reasoning_tokens, image_count,
+		input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, image_count,
 		credit_cost, status, error_code, latency_millis, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ID, row.UserID, row.APIKeyID, row.RequestID, row.Provider, row.Model, row.ModelAlias,
-		row.InputTokens, row.OutputTokens, row.CachedTokens, row.ReasoningTokens, row.ImageCount,
+		row.InputTokens, row.OutputTokens, row.CachedTokens, row.ReasoningTokens, row.TotalTokens, row.ImageCount,
 		row.CreditCost, row.Status, row.ErrorCode, row.LatencyMillis, formatTime(row.CreatedAt),
 	)
 	if err != nil {
@@ -808,7 +810,7 @@ func (s *SQLiteStore) AppendUsageLedgerRowWithRollup(ctx context.Context, params
 
 func (s *SQLiteStore) ListUsageLedgerRows(ctx context.Context, filter UsageLedgerFilter) ([]UsageLedgerRow, error) {
 	query := `SELECT id, user_id, api_key_id, request_id, provider, model, model_alias,
-		input_tokens, output_tokens, cached_tokens, reasoning_tokens, image_count,
+		input_tokens, output_tokens, cached_tokens, reasoning_tokens, total_tokens, image_count,
 		credit_cost, status, error_code, latency_millis, created_at FROM usage_ledger`
 	where, args := usageLedgerWhere(filter)
 	if len(where) > 0 {
@@ -1018,7 +1020,7 @@ func scanUsageLedgerRow(row scanner) (*UsageLedgerRow, error) {
 	var createdAt string
 	err := row.Scan(&ledger.ID, &ledger.UserID, &ledger.APIKeyID, &ledger.RequestID, &ledger.Provider, &ledger.Model,
 		&ledger.ModelAlias, &ledger.InputTokens, &ledger.OutputTokens, &ledger.CachedTokens, &ledger.ReasoningTokens,
-		&ledger.ImageCount, &ledger.CreditCost, &ledger.Status, &ledger.ErrorCode, &ledger.LatencyMillis, &createdAt)
+		&ledger.TotalTokens, &ledger.ImageCount, &ledger.CreditCost, &ledger.Status, &ledger.ErrorCode, &ledger.LatencyMillis, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1039,6 +1041,10 @@ func usageLedgerWhere(filter UsageLedgerFilter) ([]string, []any) {
 	if filter.APIKeyID != "" {
 		where = append(where, "api_key_id = ?")
 		args = append(args, filter.APIKeyID)
+	}
+	if filter.Provider != "" {
+		where = append(where, "provider = ?")
+		args = append(args, filter.Provider)
 	}
 	if filter.Model != "" {
 		where = append(where, "model = ?")

@@ -145,6 +145,13 @@ func TestMigrateSQLiteV2NormalizesLegacyMultipleCurrentAssignments(t *testing.T)
 	if usageKeyID != "key-old" {
 		t.Fatalf("usage api_key_id = %q, want key-old", usageKeyID)
 	}
+	var legacyTotalTokens int64
+	if err = db.QueryRowContext(ctx, `SELECT total_tokens FROM usage_ledger WHERE id = 'usage-1'`).Scan(&legacyTotalTokens); err != nil {
+		t.Fatalf("query legacy total tokens: %v", err)
+	}
+	if legacyTotalTokens != 0 {
+		t.Fatalf("legacy total_tokens = %d, want 0", legacyTotalTokens)
+	}
 	if _, err = db.ExecContext(ctx, `INSERT INTO api_keys (
 		id, user_id, name, key_hash, prefix, status, created_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

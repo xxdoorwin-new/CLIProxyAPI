@@ -47,6 +47,7 @@ type usageLedgerResponse struct {
 	OutputTokens    int64     `json:"output_tokens"`
 	CachedTokens    int64     `json:"cached_tokens"`
 	ReasoningTokens int64     `json:"reasoning_tokens"`
+	TotalTokens     int64     `json:"total_tokens"`
 	ImageCount      int64     `json:"image_count"`
 	CreditCost      int64     `json:"credit_cost"`
 	Status          string    `json:"status"`
@@ -73,6 +74,7 @@ func (s *Server) registerUserSessionRoutes() {
 	group.GET("/models", s.handleUserAllowedModels)
 	group.GET("/quota", s.handleUserQuotaSummary)
 	group.GET("/usage", s.handleUserUsage)
+	group.GET("/traffic-statistics", s.handleUserTrafficStatistics)
 }
 
 func (s *Server) handleUserRegister(c *gin.Context) {
@@ -435,6 +437,7 @@ func toUsageLedgerResponse(row *usermanagement.UsageLedgerRow) usageLedgerRespon
 		OutputTokens:    row.OutputTokens,
 		CachedTokens:    row.CachedTokens,
 		ReasoningTokens: row.ReasoningTokens,
+		TotalTokens:     row.TotalTokens,
 		ImageCount:      row.ImageCount,
 		CreditCost:      row.CreditCost,
 		Status:          string(row.Status),

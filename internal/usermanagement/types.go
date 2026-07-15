@@ -225,6 +225,7 @@ type UsageLedgerRow struct {
 	OutputTokens    int64
 	CachedTokens    int64
 	ReasoningTokens int64
+	TotalTokens     int64
 	ImageCount      int64
 	CreditCost      int64
 	Status          UsageStatus
@@ -244,6 +245,7 @@ type CreateUsageLedgerRowParams struct {
 	OutputTokens    int64
 	CachedTokens    int64
 	ReasoningTokens int64
+	TotalTokens     int64
 	ImageCount      int64
 	CreditCost      int64
 	Status          UsageStatus
@@ -268,12 +270,84 @@ type UsageLedgerWriteResult struct {
 type UsageLedgerFilter struct {
 	UserID   UserID
 	APIKeyID APIKeyID
+	Provider string
 	Model    string
 	Status   UsageStatus
 	From     time.Time
 	To       time.Time
 	Limit    int
 	Offset   int
+}
+
+type TrafficMetric string
+type TrafficGroupBy string
+
+const (
+	TrafficMetricTokens   TrafficMetric = "tokens"
+	TrafficMetricCredits  TrafficMetric = "credits"
+	TrafficMetricRequests TrafficMetric = "requests"
+
+	TrafficGroupByProvider TrafficGroupBy = "provider"
+	TrafficGroupByModel    TrafficGroupBy = "model"
+)
+
+type TrafficStatisticsQuery struct {
+	UserID   UserID
+	From     string
+	To       string
+	TimeZone string
+	Provider string
+	Model    string
+	Status   UsageStatus
+	GroupBy  TrafficGroupBy
+}
+
+type TrafficStatistics struct {
+	PeriodStart       string               `json:"period_start"`
+	PeriodEnd         string               `json:"period_end"`
+	TimeZone          string               `json:"time_zone"`
+	Summary           TrafficSummary       `json:"summary"`
+	Ranking           []TrafficUserRanking `json:"ranking,omitempty"`
+	Daily             []TrafficDailyPoint  `json:"daily"`
+	Series            []TrafficModelSeries `json:"series"`
+	Providers         []string             `json:"providers"`
+	Models            []string             `json:"models"`
+	HasEstimatedTotal bool                 `json:"has_estimated_total"`
+}
+
+type TrafficSummary struct {
+	TotalTokens  int64 `json:"total_tokens"`
+	TotalCredits int64 `json:"total_credits"`
+	Requests     int64 `json:"requests"`
+	ActiveUsers  int64 `json:"active_users"`
+	Failed       int64 `json:"failed_requests"`
+}
+
+type TrafficUserRanking struct {
+	UserID       UserID `json:"user_id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name,omitempty"`
+	TotalTokens  int64  `json:"total_tokens"`
+	TotalCredits int64  `json:"total_credits"`
+	Requests     int64  `json:"requests"`
+}
+
+type TrafficDailyPoint struct {
+	Date         string `json:"date"`
+	TotalTokens  int64  `json:"total_tokens"`
+	TotalCredits int64  `json:"total_credits"`
+	Requests     int64  `json:"requests"`
+}
+
+type TrafficModelSeries struct {
+	Key          string              `json:"key"`
+	Provider     string              `json:"provider,omitempty"`
+	Model        string              `json:"model,omitempty"`
+	Other        bool                `json:"other,omitempty"`
+	TotalTokens  int64               `json:"total_tokens"`
+	TotalCredits int64               `json:"total_credits"`
+	Requests     int64               `json:"requests"`
+	Points       []TrafficDailyPoint `json:"points"`
 }
 
 type QuotaRollup struct {

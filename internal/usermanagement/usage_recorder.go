@@ -31,6 +31,7 @@ type RecordUsageParams struct {
 	OutputTokens    int64
 	CachedTokens    int64
 	ReasoningTokens int64
+	TotalTokens     int64
 	ImageCount      int64
 	Failed          bool
 	ErrorCode       string
@@ -118,6 +119,7 @@ func (r *UsageRecorder) RecordUsage(ctx context.Context, params RecordUsageParam
 			OutputTokens:    params.OutputTokens,
 			CachedTokens:    params.CachedTokens,
 			ReasoningTokens: params.ReasoningTokens,
+			TotalTokens:     params.TotalTokens,
 			ImageCount:      params.ImageCount,
 			CreditCost:      creditCost,
 			Status:          status,
