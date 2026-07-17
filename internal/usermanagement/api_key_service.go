@@ -62,7 +62,8 @@ func (s *UserAPIKeyService) BindKey(ctx context.Context, req BindUserAPIKeyReque
 	if s == nil || s.users == nil || s.keys == nil {
 		return nil, ErrInvalid
 	}
-	if err := s.ensureApprovedUser(ctx, req.UserID); err != nil {
+	user, err := s.ensureApprovedUser(ctx, req.UserID)
+	if err != nil {
 		return nil, err
 	}
 	ref, ok := s.configured.byFingerprint[strings.TrimSpace(req.ConfiguredKeyFingerprint)]
@@ -75,7 +76,7 @@ func (s *UserAPIKeyService) BindKey(ctx context.Context, req BindUserAPIKeyReque
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		name = ref.Prefix
+		name = user.Username + "专用密钥"
 	}
 	key, err := s.keys.AssignAPIKey(ctx, AssignAPIKeyParams{
 		UserID:    req.UserID,
@@ -182,18 +183,18 @@ func (s *UserAPIKeyService) UpdateLastUsed(ctx context.Context, id APIKeyID, use
 	return s.keys.UpdateAPIKey(ctx, id, UpdateAPIKeyParams{LastUsedAt: &usedAt})
 }
 
-func (s *UserAPIKeyService) ensureApprovedUser(ctx context.Context, userID UserID) error {
+func (s *UserAPIKeyService) ensureApprovedUser(ctx context.Context, userID UserID) (*User, error) {
 	if userID == "" {
-		return invalid("user id is required")
+		return nil, invalid("user id is required")
 	}
 	user, err := s.users.GetUser(ctx, userID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if user.Status != UserStatusApproved {
-		return ErrForbidden
+		return nil, ErrForbidden
 	}
-	return nil
+	return user, nil
 }
 
 func (s *UserAPIKeyService) APIKeyMetadataFromKey(key APIKey) APIKeyMetadata {

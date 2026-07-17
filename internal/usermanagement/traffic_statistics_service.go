@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const trafficDateLayout = "2006-01-02"
+const (
+	trafficDateLayout = "2006-01-02"
+	trafficHourLayout = "2006-01-02T15:00:00"
+)
 
 type TrafficStatisticsService struct {
 	users  UserStore
@@ -27,7 +30,14 @@ func (s *TrafficStatisticsService) Statistics(ctx context.Context, query Traffic
 	if err != nil {
 		return nil, err
 	}
-	start, end, startDate, endDate, err := trafficPeriod(query, s.now(), loc)
+	granularity := query.Granularity
+	if granularity == "" {
+		granularity = TrafficGranularityDay
+	}
+	if granularity != TrafficGranularityDay && granularity != TrafficGranularityHour {
+		return nil, invalid("invalid traffic granularity %q", granularity)
+	}
+	start, end, startDate, endDate, err := trafficPeriod(query, granularity, s.now(), loc)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +75,7 @@ func (s *TrafficStatisticsService) Statistics(ctx context.Context, query Traffic
 	daily := make(map[string]*trafficAggregate)
 	series := make(map[string]*trafficSeriesAggregate)
 	ranking := make(map[UserID]*trafficUserAggregate)
+	userSeries := make(map[UserID]map[string]*trafficSeriesAggregate)
 	providers := make(map[string]struct{})
 	models := make(map[string]struct{})
 	activeUsers := make(map[UserID]struct{})
@@ -72,13 +83,14 @@ func (s *TrafficStatisticsService) Statistics(ctx context.Context, query Traffic
 		PeriodStart: startDate.Format(trafficDateLayout),
 		PeriodEnd:   endDate.Format(trafficDateLayout),
 		TimeZone:    loc.String(),
+		Granularity: string(granularity),
 	}
 
-	for date := startDate; date.Before(end); date = date.AddDate(0, 0, 1) {
-		daily[date.Format(trafficDateLayout)] = &trafficAggregate{}
+	for date := startDate; date.Before(end); date = trafficNextBucket(date, granularity) {
+		daily[trafficBucketKey(date, granularity)] = &trafficAggregate{}
 	}
 	for _, row := range rows {
-		day := row.CreatedAt.In(loc).Format(trafficDateLayout)
+		day := trafficBucketKey(row.CreatedAt.In(loc), granularity)
 		dailyTotal, ok := daily[day]
 		if !ok {
 			dailyTotal = &trafficAggregate{}
@@ -111,13 +123,25 @@ func (s *TrafficStatisticsService) Statistics(ctx context.Context, query Traffic
 			series[seriesKey] = modelTotal
 		}
 		modelTotal.add(day, tokens, row.CreditCost, row.Status)
+
+		userSeriesTotals := userSeries[row.UserID]
+		if userSeriesTotals == nil {
+			userSeriesTotals = make(map[string]*trafficSeriesAggregate)
+			userSeries[row.UserID] = userSeriesTotals
+		}
+		userModelTotal := userSeriesTotals[seriesKey]
+		if userModelTotal == nil {
+			userModelTotal = &trafficSeriesAggregate{Key: seriesKey, Provider: provider, Model: model}
+			userSeriesTotals[seriesKey] = userModelTotal
+		}
+		userModelTotal.add(day, tokens, row.CreditCost, row.Status)
 	}
 	result.Summary.ActiveUsers = int64(len(activeUsers))
 	localEndExclusive := endDate.AddDate(0, 0, 1)
-	result.Daily = trafficDailyPoints(daily, startDate, localEndExclusive)
+	result.Daily = trafficDailyPoints(daily, startDate, localEndExclusive, granularity)
 	result.Providers = sortedStrings(providers)
 	result.Models = sortedStrings(models)
-	result.Series = trafficSeries(series, startDate, localEndExclusive, 5)
+	result.Series = trafficSeries(series, startDate, localEndExclusive, 5, granularity)
 
 	if query.UserID == "" {
 		result.Ranking = make([]TrafficUserRanking, 0, len(ranking))
@@ -130,6 +154,7 @@ func (s *TrafficStatisticsService) Statistics(ctx context.Context, query Traffic
 				TotalTokens:  total.TotalTokens,
 				TotalCredits: total.TotalCredits,
 				Requests:     total.Requests,
+				Series:       trafficUserSeries(userSeries[total.UserID], 5),
 			})
 		}
 		sort.SliceStable(result.Ranking, func(i, j int) bool {
@@ -208,7 +233,21 @@ func trafficLocation(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-func trafficPeriod(query TrafficStatisticsQuery, now time.Time, loc *time.Location) (time.Time, time.Time, time.Time, time.Time, error) {
+func trafficBucketKey(t time.Time, granularity TrafficGranularity) string {
+	if granularity == TrafficGranularityHour {
+		return t.Truncate(time.Hour).Format(trafficHourLayout)
+	}
+	return t.Format(trafficDateLayout)
+}
+
+func trafficNextBucket(t time.Time, granularity TrafficGranularity) time.Time {
+	if granularity == TrafficGranularityHour {
+		return t.Add(time.Hour)
+	}
+	return t.AddDate(0, 0, 1)
+}
+
+func trafficPeriod(query TrafficStatisticsQuery, granularity TrafficGranularity, now time.Time, loc *time.Location) (time.Time, time.Time, time.Time, time.Time, error) {
 	localNow := now.In(loc)
 	startDate := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
 	endDate := startDate.AddDate(0, 1, -1)
@@ -231,6 +270,9 @@ func trafficPeriod(query TrafficStatisticsQuery, now time.Time, loc *time.Locati
 	}
 	if endDate.Before(startDate) {
 		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, invalid("traffic end date must not precede start date")
+	}
+	if granularity == TrafficGranularityHour && !endDate.Equal(startDate) {
+		return time.Time{}, time.Time{}, time.Time{}, time.Time{}, invalid("traffic hour granularity requires a single day range")
 	}
 	endExclusive := endDate.AddDate(0, 0, 1)
 	days := 0
@@ -257,10 +299,10 @@ func trafficSeriesKey(groupBy TrafficGroupBy, provider, model string) (string, s
 	return "model:" + provider + "\x00" + model, provider, model
 }
 
-func trafficDailyPoints(values map[string]*trafficAggregate, start, end time.Time) []TrafficDailyPoint {
+func trafficDailyPoints(values map[string]*trafficAggregate, start, end time.Time, granularity TrafficGranularity) []TrafficDailyPoint {
 	points := make([]TrafficDailyPoint, 0)
-	for date := start; date.Before(end); date = date.AddDate(0, 0, 1) {
-		key := date.Format(trafficDateLayout)
+	for date := start; date.Before(end); date = trafficNextBucket(date, granularity) {
+		key := trafficBucketKey(date, granularity)
 		value := values[key]
 		if value == nil {
 			value = &trafficAggregate{}
@@ -270,7 +312,7 @@ func trafficDailyPoints(values map[string]*trafficAggregate, start, end time.Tim
 	return points
 }
 
-func trafficSeries(values map[string]*trafficSeriesAggregate, start, end time.Time, limit int) []TrafficModelSeries {
+func trafficSeries(values map[string]*trafficSeriesAggregate, start, end time.Time, limit int, granularity TrafficGranularity) []TrafficModelSeries {
 	all := make([]*trafficSeriesAggregate, 0, len(values))
 	for _, value := range values {
 		all = append(all, value)
@@ -308,7 +350,46 @@ func trafficSeries(values map[string]*trafficSeriesAggregate, start, end time.Ti
 			TotalTokens:  value.TotalTokens,
 			TotalCredits: value.TotalCredits,
 			Requests:     value.Requests,
-			Points:       trafficDailyPoints(points, start, end),
+			Points:       trafficDailyPoints(points, start, end, granularity),
+		})
+	}
+	return result
+}
+
+func trafficUserSeries(values map[string]*trafficSeriesAggregate, limit int) []TrafficUserRankingSeries {
+	all := make([]*trafficSeriesAggregate, 0, len(values))
+	for _, value := range values {
+		all = append(all, value)
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].TotalTokens != all[j].TotalTokens {
+			return all[i].TotalTokens > all[j].TotalTokens
+		}
+		return all[i].Key < all[j].Key
+	})
+	if limit <= 0 || len(all) <= limit {
+		limit = len(all)
+	}
+	visible := all[:limit]
+	other := &trafficSeriesAggregate{Key: "other", Other: true}
+	for _, value := range all[limit:] {
+		other.TotalTokens += value.TotalTokens
+		other.TotalCredits += value.TotalCredits
+		other.Requests += value.Requests
+	}
+	if len(all) > limit {
+		visible = append(visible, other)
+	}
+	result := make([]TrafficUserRankingSeries, 0, len(visible))
+	for _, value := range visible {
+		result = append(result, TrafficUserRankingSeries{
+			Key:          value.Key,
+			Provider:     value.Provider,
+			Model:        value.Model,
+			Other:        value.Other,
+			TotalTokens:  value.TotalTokens,
+			TotalCredits: value.TotalCredits,
+			Requests:     value.Requests,
 		})
 	}
 	return result

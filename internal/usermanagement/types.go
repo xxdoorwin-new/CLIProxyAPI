@@ -281,6 +281,7 @@ type UsageLedgerFilter struct {
 
 type TrafficMetric string
 type TrafficGroupBy string
+type TrafficGranularity string
 
 const (
 	TrafficMetricTokens   TrafficMetric = "tokens"
@@ -289,23 +290,28 @@ const (
 
 	TrafficGroupByProvider TrafficGroupBy = "provider"
 	TrafficGroupByModel    TrafficGroupBy = "model"
+
+	TrafficGranularityDay  TrafficGranularity = "day"
+	TrafficGranularityHour TrafficGranularity = "hour"
 )
 
 type TrafficStatisticsQuery struct {
-	UserID   UserID
-	From     string
-	To       string
-	TimeZone string
-	Provider string
-	Model    string
-	Status   UsageStatus
-	GroupBy  TrafficGroupBy
+	UserID      UserID
+	From        string
+	To          string
+	TimeZone    string
+	Provider    string
+	Model       string
+	Status      UsageStatus
+	GroupBy     TrafficGroupBy
+	Granularity TrafficGranularity
 }
 
 type TrafficStatistics struct {
 	PeriodStart       string               `json:"period_start"`
 	PeriodEnd         string               `json:"period_end"`
 	TimeZone          string               `json:"time_zone"`
+	Granularity       string               `json:"granularity"`
 	Summary           TrafficSummary       `json:"summary"`
 	Ranking           []TrafficUserRanking `json:"ranking,omitempty"`
 	Daily             []TrafficDailyPoint  `json:"daily"`
@@ -324,9 +330,20 @@ type TrafficSummary struct {
 }
 
 type TrafficUserRanking struct {
-	UserID       UserID `json:"user_id"`
-	Username     string `json:"username"`
-	DisplayName  string `json:"display_name,omitempty"`
+	UserID       UserID                     `json:"user_id"`
+	Username     string                     `json:"username"`
+	DisplayName  string                     `json:"display_name,omitempty"`
+	TotalTokens  int64                      `json:"total_tokens"`
+	TotalCredits int64                      `json:"total_credits"`
+	Requests     int64                      `json:"requests"`
+	Series       []TrafficUserRankingSeries `json:"series,omitempty"`
+}
+
+type TrafficUserRankingSeries struct {
+	Key          string `json:"key"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Other        bool   `json:"other,omitempty"`
 	TotalTokens  int64  `json:"total_tokens"`
 	TotalCredits int64  `json:"total_credits"`
 	Requests     int64  `json:"requests"`

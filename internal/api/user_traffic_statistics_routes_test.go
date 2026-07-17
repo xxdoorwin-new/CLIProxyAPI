@@ -101,4 +101,18 @@ func TestTrafficStatisticsRoutesRespectAdminAndSelfScopes(t *testing.T) {
 	if forbiddenResponse.Code != http.StatusForbidden {
 		t.Fatalf("ordinary management statistics status = %d, want 403", forbiddenResponse.Code)
 	}
+
+	hourlyResponse := request("/v0/management/traffic-statistics?time_zone=UTC&from=2026-07-10&to=2026-07-10&granularity=hour", "X-Management-Key", "test-management-key")
+	if hourlyResponse.Code != http.StatusOK {
+		t.Fatalf("hourly statistics status = %d, want 200; body = %s", hourlyResponse.Code, hourlyResponse.Body.String())
+	}
+	var hourlyPayload struct {
+		Traffic usermanagement.TrafficStatistics `json:"traffic"`
+	}
+	if err = json.Unmarshal(hourlyResponse.Body.Bytes(), &hourlyPayload); err != nil {
+		t.Fatalf("decode hourly statistics: %v", err)
+	}
+	if hourlyPayload.Traffic.Granularity != "hour" || len(hourlyPayload.Traffic.Daily) != 24 {
+		t.Fatalf("hourly statistics = %#v, want granularity=hour with 24 buckets", hourlyPayload.Traffic)
+	}
 }
