@@ -56,6 +56,9 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 		if _, blocked := hopByHopHeaders[canonicalKey]; blocked {
 			continue
 		}
+		if _, reserved := cpaReservedResponseHeaders[canonicalKey]; reserved {
+			continue
+		}
 		if _, scoped := connectionScoped[canonicalKey]; scoped {
 			continue
 		}

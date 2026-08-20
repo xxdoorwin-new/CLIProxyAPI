@@ -6,23 +6,24 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
@@ -52,55 +53,10 @@ const idempotencyKeyMetadataKey = "idempotency_key"
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
+	// Stream interceptor history is intentionally bounded and not configurable in the first SDK surface.
+	maxStreamInterceptorHistoryChunks = 64
+	maxStreamInterceptorHistoryBytes  = 1 << 20
 )
-
-type pinnedAuthContextKey struct{}
-type selectedAuthCallbackContextKey struct{}
-type executionSessionContextKey struct{}
-type disallowFreeAuthContextKey struct{}
-
-// WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
-func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
-	authID = strings.TrimSpace(authID)
-	if authID == "" {
-		return ctx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, pinnedAuthContextKey{}, authID)
-}
-
-// WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
-func WithSelectedAuthIDCallback(ctx context.Context, callback func(string)) context.Context {
-	if callback == nil {
-		return ctx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, selectedAuthCallbackContextKey{}, callback)
-}
-
-// WithExecutionSessionID returns a child context tagged with a long-lived execution session ID.
-func WithExecutionSessionID(ctx context.Context, sessionID string) context.Context {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return ctx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
-}
-
-// WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
-func WithDisallowFreeAuth(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
-}
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
 // If errText is already valid JSON, it is returned as-is to preserve upstream error payloads.
@@ -209,8 +165,10 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Only include it if the client explicitly provides it.
 	key := ""
 	requestPath := ""
+	var ginCtx *gin.Context
 	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		if requestGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && requestGinCtx != nil && requestGinCtx.Request != nil {
+			ginCtx = requestGinCtx
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 			requestPath = strings.TrimSpace(ginCtx.FullPath())
 			if requestPath == "" && ginCtx.Request.URL != nil {
@@ -232,13 +190,54 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
 	}
+	if ginCtx != nil && !websocket.IsWebSocketUpgrade(ginCtx.Request) {
+		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
+			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
+		}
+	}
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
+	}
+	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
+		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
 	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
 	return meta
+}
+
+func requestClientIP(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	remoteAddr := strings.TrimSpace(request.RemoteAddr)
+	if host, _, errSplit := net.SplitHostPort(remoteAddr); errSplit == nil {
+		return strings.TrimSpace(host)
+	}
+	return remoteAddr
+}
+
+func requestCallerScope(ginCtx *gin.Context) string {
+	if ginCtx == nil {
+		return ""
+	}
+	value, exists := ginCtx.Get("userApiKey")
+	if !exists || value == nil {
+		return ""
+	}
+	return coresession.CallerScope(fmt.Sprint(value))
+}
+
+func addAuthSelectionModelMetadata(meta map[string]any, model string) {
+	if meta == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	meta[coreexecutor.AuthSelectionModelMetadataKey] = model
 }
 
 func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
@@ -256,7 +255,7 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil {
 		return
 	}
-	serviceTier := coreusage.DefaultServiceTier
+	serviceTier := coreusage.AutoServiceTier
 	node := gjson.GetBytes(rawJSON, "service_tier")
 	if node.Exists() {
 		value := strings.TrimSpace(node.String())
@@ -267,66 +266,17 @@ func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 	meta[coreexecutor.ServiceTierMetadataKey] = serviceTier
 }
 
-// headersFromContext extracts the original HTTP request headers from the gin context
-// embedded in the provided context. This allows session affinity selectors to read
-// client headers like X-Amp-Thread-Id.
-func headersFromContext(ctx context.Context) http.Header {
-	if ctx == nil {
-		return nil
+func setGenerateMetadata(meta map[string]any, rawJSON []byte) {
+	if meta == nil {
+		return
 	}
-	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-		return ginCtx.Request.Header.Clone()
+	// Missing or true means generation is enabled; only an explicit false disables generation.
+	generate := true
+	node := gjson.GetBytes(rawJSON, "generate")
+	if node.Exists() && node.IsBool() && !node.Bool() {
+		generate = false
 	}
-	return nil
-}
-
-func pinnedAuthIDFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	raw := ctx.Value(pinnedAuthContextKey{})
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case []byte:
-		return strings.TrimSpace(string(v))
-	default:
-		return ""
-	}
-}
-
-func selectedAuthIDCallbackFromContext(ctx context.Context) func(string) {
-	if ctx == nil {
-		return nil
-	}
-	raw := ctx.Value(selectedAuthCallbackContextKey{})
-	if callback, ok := raw.(func(string)); ok && callback != nil {
-		return callback
-	}
-	return nil
-}
-
-func executionSessionIDFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	raw := ctx.Value(executionSessionContextKey{})
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case []byte:
-		return strings.TrimSpace(string(v))
-	default:
-		return ""
-	}
-}
-
-func disallowFreeAuthFromContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
-	return ok && raw
+	meta[coreexecutor.GenerateMetadataKey] = generate
 }
 
 // BaseAPIHandler contains the handlers for API endpoints.
@@ -338,6 +288,13 @@ type BaseAPIHandler struct {
 
 	// Cfg holds the current application configuration.
 	Cfg *config.SDKConfig
+
+	// PluginHost optionally applies plugin interceptors around upstream execution.
+	PluginHost PluginInterceptorHost
+
+	// ModelRouterHost optionally routes matching requests to a plugin executor, the router's own
+	// executor, or a built-in provider before model-to-provider resolution and auth selection.
+	ModelRouterHost PluginModelRouterHost
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -363,6 +320,52 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+
+// SetPluginHost configures the optional plugin interceptor host.
+func (h *BaseAPIHandler) SetPluginHost(host PluginInterceptorHost) {
+	if h == nil {
+		return
+	}
+	if isNilPluginInterceptorHost(host) {
+		h.PluginHost = nil
+		return
+	}
+	h.PluginHost = host
+}
+
+// SetModelRouterHost configures the optional plugin model router host.
+func (h *BaseAPIHandler) SetModelRouterHost(host PluginModelRouterHost) {
+	if h == nil {
+		return
+	}
+	if isNilPluginModelRouterHost(host) {
+		h.ModelRouterHost = nil
+		return
+	}
+	h.ModelRouterHost = host
+}
+
+func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
+	return isNilInterface(host)
+}
+
+func isNilPluginModelRouterHost(host PluginModelRouterHost) bool {
+	return isNilInterface(host)
+}
+
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	// A typed nil pointer stored in an interface is not equal to nil.
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
 
 // GetAlt extracts the 'alt' parameter from the request query string.
 // It checks both 'alt' and '$alt' parameters and returns the appropriate value.
@@ -434,6 +437,13 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	if endpoint != "" {
 		newCtx = logging.WithEndpoint(newCtx, endpoint)
+	}
+	if c != nil && c.Request != nil {
+		newCtx = logging.WithClientRequestMetadata(newCtx, logging.ClientRequestMetadata{
+			ClientIP:      requestClientIP(c.Request),
+			XForwardedFor: strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
+			UserAgent:     strings.TrimSpace(c.Request.UserAgent()),
+		})
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
 	newCtx = logging.WithResponseHeadersHolder(newCtx)

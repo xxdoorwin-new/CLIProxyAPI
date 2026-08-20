@@ -6,17 +6,12 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,11 +22,8 @@ import (
 	useraccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/user_access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules"
-	ampmodule "github.com/router-for-me/CLIProxyAPI/v7/internal/api/modules/amp"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -41,121 +33,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/claude"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/gemini"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
 )
-
-const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
-
-type serverOptionConfig struct {
-	extraMiddleware      []gin.HandlerFunc
-	engineConfigurator   func(*gin.Engine)
-	routerConfigurator   func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
-	requestLoggerFactory func(*config.Config, string) logging.RequestLogger
-	localPassword        string
-	keepAliveEnabled     bool
-	keepAliveTimeout     time.Duration
-	keepAliveOnTimeout   func()
-	postAuthHook         auth.PostAuthHook
-	postAuthPersistHook  auth.PostAuthHook
-	pluginHost           *pluginhost.Host
-}
-
-// ServerOption customises HTTP server construction.
-type ServerOption func(*serverOptionConfig)
-
-func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
-	configDir := filepath.Dir(configPath)
-	logsDir := logging.ResolveLogDirectory(cfg)
-	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
-	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
-	return logger
-}
-
-func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
-	if cfg == nil {
-		return nil
-	}
-	sdkCfg := cfg.SDKConfig
-	if cfg.CommercialMode {
-		sdkCfg.RequestLog = false
-	}
-	return &sdkCfg
-}
-
-// WithMiddleware appends additional Gin middleware during server construction.
-func WithMiddleware(mw ...gin.HandlerFunc) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.extraMiddleware = append(cfg.extraMiddleware, mw...)
-	}
-}
-
-// WithEngineConfigurator allows callers to mutate the Gin engine prior to middleware setup.
-func WithEngineConfigurator(fn func(*gin.Engine)) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.engineConfigurator = fn
-	}
-}
-
-// WithRouterConfigurator appends a callback after default routes are registered.
-func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.routerConfigurator = fn
-	}
-}
-
-// WithLocalManagementPassword stores a runtime-only management password accepted for localhost requests.
-func WithLocalManagementPassword(password string) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.localPassword = password
-	}
-}
-
-// WithKeepAliveEndpoint enables a keep-alive endpoint with the provided timeout and callback.
-func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		if timeout <= 0 || onTimeout == nil {
-			return
-		}
-		cfg.keepAliveEnabled = true
-		cfg.keepAliveTimeout = timeout
-		cfg.keepAliveOnTimeout = onTimeout
-	}
-}
-
-// WithRequestLoggerFactory customises request logger creation.
-func WithRequestLoggerFactory(factory func(*config.Config, string) logging.RequestLogger) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.requestLoggerFactory = factory
-	}
-}
-
-// WithPostAuthHook registers a hook to be called after auth record creation.
-func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.postAuthHook = hook
-	}
-}
-
-// WithPostAuthPersistHook registers a hook to be called after auth persistence.
-func WithPostAuthPersistHook(hook auth.PostAuthHook) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.postAuthPersistHook = hook
-	}
-}
-
-// WithPluginHost registers dynamic plugin HTTP adapters with the server.
-func WithPluginHost(host *pluginhost.Host) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.pluginHost = host
-	}
-}
 
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
@@ -173,7 +55,8 @@ type Server struct {
 	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
-	handlers *handlers.BaseAPIHandler
+	handlers         *handlers.BaseAPIHandler
+	codexLiveHandler *codexlive.Handler
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
@@ -209,9 +92,6 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
-	// ampModule is the Amp routing module for model mapping hot-reload
-	ampModule *ampmodule.AmpModule
-
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -230,6 +110,9 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	exampleAPIKeySafeModeEnabled bool
+	exampleAPIKeySafeModeActive  atomic.Bool
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -263,6 +146,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	engine.Use(logging.CPATraceIDMiddleware())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -306,8 +190,16 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+
+		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
+	s.handlers.SetPluginHost(optionState.pluginHost)
+	if optionState.pluginHost != nil {
+		optionState.pluginHost.SetModelExecutor(s.handlers)
+		optionState.pluginHost.SetAuthManager(authManager)
+	}
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.applyAccessConfig(nil, cfg)
@@ -316,10 +208,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
+	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -336,21 +230,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
+	engine.Use(s.exampleAPIKeySafeModeMiddleware())
 
 	// Setup routes
 	s.setupRoutes()
-
-	// Register Amp module using V2 interface with Context
-	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
-	ctx := modules.Context{
-		Engine:         engine,
-		BaseHandler:    s.handlers,
-		Config:         cfg,
-		AuthMiddleware: AuthMiddleware(accessManager),
-	}
-	if err := modules.RegisterModule(ctx, s.ampModule); err != nil {
-		log.Errorf("Failed to register Amp module: %v", err)
-	}
 
 	// Apply additional router configurators from options
 	if optionState.routerConfigurator != nil {
@@ -1636,8 +1519,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	// Shutdown the HTTP server.
-	if err := s.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
+	errShutdown := s.server.Shutdown(ctx)
+	if s.codexLiveHandler != nil {
+		s.codexLiveHandler.Close()
+	}
+	if errShutdown != nil {
+		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
 	}
 	s.closeUserManagementStore()
 
