@@ -42,12 +42,6 @@ type Config struct {
 	// Home config is runtime-only and is populated from -home-jwt.
 	Home HomeConfig `yaml:"-" json:"-"`
 
-	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
-	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
-
-	// CredentialInFlight configures credential observation snapshots.
-	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
-
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
@@ -88,15 +82,8 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
-	// DisableCooling disables auth/model cooldown scheduling when true unless a credential or provider overrides it.
+	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
-
-	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
-	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
-
-	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
-	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
-	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
@@ -129,23 +116,11 @@ type Config struct {
 
 	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
 
-	// Antigravity configures provider-wide Antigravity request behavior.
-	Antigravity AntigravityConfig `yaml:"antigravity" json:"antigravity"`
-
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
-	// InteractionsKey defines native Google Interactions API key configurations.
-	InteractionsKey []GeminiKey `yaml:"interactions-api-key" json:"interactions-api-key"`
-
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
-
-	// XAIKey defines xAI API key configurations using the same structure as Codex API keys.
-	XAIKey []XAIKey `yaml:"xai-api-key" json:"xai-api-key"`
-
-	// XAI configures provider-wide xAI request behavior.
-	XAI XAIConfig `yaml:"xai" json:"xai"`
 
 	// Codex configures provider-wide Codex request behavior.
 	Codex CodexConfig `yaml:"codex" json:"codex"`
@@ -161,14 +136,6 @@ type Config struct {
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
 
-	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
-	// Cloaking disguises requests as the official Claude Code CLI and replaces the
-	// system prompt. When true, every Claude credential defaults to no cloaking
-	// ("never"); a specific credential can still re-enable or override it via its own
-	// cloak settings (the per claude-api-key "cloak" block, or a "cloak_mode" value in
-	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
-	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
-
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -176,15 +143,18 @@ type Config struct {
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
 
+	// AmpCode contains Amp CLI upstream configuration, management restrictions, and model mappings.
+	AmpCode AmpCode `yaml:"ampcode" json:"ampcode"`
+
 	// OAuthExcludedModels defines per-provider global model exclusions applied to OAuth/file-backed auth entries.
 	OAuthExcludedModels map[string][]string `yaml:"oauth-excluded-models,omitempty" json:"oauth-excluded-models,omitempty"`
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// vertex, aistudio, antigravity, claude, codex, kimi, xai.
+	// gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
-	// gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, claude-api-key, openai-compatibility, and vertex-api-key.
+	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
 	// Payload defines default and override rules for provider payload parameters.

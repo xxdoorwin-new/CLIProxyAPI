@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
-	log "github.com/sirupsen/logrus"
 )
 
 // KimiTokenStorage stores OAuth2 token information for Kimi API authentication.
@@ -88,21 +87,19 @@ func (ts *KimiTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	// Merge metadata using helper
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
-	if errMerge != nil {
-		return fmt.Errorf("failed to merge metadata: %w", errMerge)
-	}
-
 	f, err := os.Create(authFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
 	}
 	defer func() {
-		if errClose := f.Close(); errClose != nil {
-			log.Errorf("kimi token storage: close token file error: %v", errClose)
-		}
+		_ = f.Close()
 	}()
+
+	// Merge metadata using helper
+	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	if errMerge != nil {
+		return fmt.Errorf("failed to merge metadata: %w", errMerge)
+	}
 
 	encoder := json.NewEncoder(f)
 	encoder.SetIndent("", "  ")

@@ -41,16 +41,6 @@ func TestDisableImageGenerationMode_UnmarshalYAML(t *testing.T) {
 			t.Fatalf("chat => %v, want %v", w.V, DisableImageGenerationChat)
 		}
 	}
-
-	{
-		var w wrapper
-		if err := yaml.Unmarshal([]byte("disable-image-generation: passthrough\n"), &w); err != nil {
-			t.Fatalf("unmarshal passthrough: %v", err)
-		}
-		if w.V != DisableImageGenerationPassthrough {
-			t.Fatalf("passthrough => %v, want %v", w.V, DisableImageGenerationPassthrough)
-		}
-	}
 }
 
 func TestDisableImageGenerationMode_UnmarshalJSON(t *testing.T) {
@@ -81,16 +71,6 @@ func TestDisableImageGenerationMode_UnmarshalJSON(t *testing.T) {
 		}
 		if v != DisableImageGenerationChat {
 			t.Fatalf("chat => %v, want %v", v, DisableImageGenerationChat)
-		}
-	}
-
-	{
-		var v DisableImageGenerationMode
-		if err := json.Unmarshal([]byte(`"passthrough"`), &v); err != nil {
-			t.Fatalf("unmarshal passthrough: %v", err)
-		}
-		if v != DisableImageGenerationPassthrough {
-			t.Fatalf("passthrough => %v, want %v", v, DisableImageGenerationPassthrough)
 		}
 	}
 }

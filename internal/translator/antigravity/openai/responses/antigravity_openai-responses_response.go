@@ -22,12 +22,12 @@ func ConvertAntigravityResponseToOpenAIResponsesNonStream(ctx context.Context, m
 	}
 
 	requestResult := gjson.GetBytes(originalRequestRawJSON, "request")
-	if requestResult.Exists() {
+	if responseResult.Exists() {
 		originalRequestRawJSON = []byte(requestResult.Raw)
 	}
 
 	requestResult = gjson.GetBytes(requestRawJSON, "request")
-	if requestResult.Exists() {
+	if responseResult.Exists() {
 		requestRawJSON = []byte(requestResult.Raw)
 	}
 

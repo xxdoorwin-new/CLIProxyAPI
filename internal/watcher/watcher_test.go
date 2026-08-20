@@ -63,22 +63,20 @@ func TestApplyAuthExcludedModelsMeta_OAuthProvider(t *testing.T) {
 
 func TestBuildAPIKeyClientsCounts(t *testing.T) {
 	cfg := &config.Config{
-		GeminiKey:       []config.GeminiKey{{APIKey: "g1"}, {APIKey: "g2"}},
-		InteractionsKey: []config.GeminiKey{{APIKey: "i1"}},
+		GeminiKey: []config.GeminiKey{{APIKey: "g1"}, {APIKey: "g2"}},
 		VertexCompatAPIKey: []config.VertexCompatKey{
 			{APIKey: "v1"},
 		},
 		ClaudeKey: []config.ClaudeKey{{APIKey: "c1"}},
-		CodexKey:  []config.CodexKey{{APIKey: "c1"}, {APIKey: "c2"}},
-		XAIKey:    []config.XAIKey{{APIKey: "x1"}},
+		CodexKey:  []config.CodexKey{{APIKey: "x1"}, {APIKey: "x2"}},
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "o1"}, {APIKey: "o2"}}},
 		},
 	}
 
-	gemini, vertex, claude, codex, xai, compat := BuildAPIKeyClients(cfg)
-	if gemini != 3 || vertex != 1 || claude != 1 || codex != 2 || xai != 1 || compat != 2 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d", gemini, vertex, claude, codex, xai, compat)
+	gemini, vertex, claude, codex, compat := BuildAPIKeyClients(cfg)
+	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d", gemini, vertex, claude, codex, compat)
 	}
 }
 
@@ -143,20 +141,30 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 				Headers:        map[string]string{"X-Req": "1"},
 			},
 		},
+		OAuthExcludedModels: map[string][]string{
+			"gemini-cli": {"Foo", "bar"},
+		},
 	}
 
 	w := &Watcher{authDir: authDir}
 	w.SetConfig(cfg)
 
 	auths := w.SnapshotCoreAuths()
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 config auth entry, got %d", len(auths))
+	if len(auths) != 4 {
+		t.Fatalf("expected 4 auth entries (1 config + 1 primary + 2 virtual), got %d", len(auths))
 	}
 
 	var geminiAPIKeyAuth *coreauth.Auth
+	var geminiPrimary *coreauth.Auth
+	virtuals := make([]*coreauth.Auth, 0)
 	for _, a := range auths {
-		if a.Provider == "gemini" && a.Attributes["api_key"] == "g-key" {
+		switch {
+		case a.Provider == "gemini" && a.Attributes["api_key"] == "g-key":
 			geminiAPIKeyAuth = a
+		case a.Attributes["gemini_virtual_primary"] == "true":
+			geminiPrimary = a
+		case strings.TrimSpace(a.Attributes["gemini_virtual_parent"]) != "":
+			virtuals = append(virtuals, a)
 		}
 	}
 	if geminiAPIKeyAuth == nil {
@@ -168,6 +176,35 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 	}
 	if geminiAPIKeyAuth.Attributes["auth_kind"] != "apikey" {
 		t.Fatalf("expected auth_kind=apikey, got %s", geminiAPIKeyAuth.Attributes["auth_kind"])
+	}
+
+	if geminiPrimary == nil {
+		t.Fatal("expected primary gemini-cli auth from file")
+	}
+	if !geminiPrimary.Disabled || geminiPrimary.Status != coreauth.StatusDisabled {
+		t.Fatal("expected primary gemini-cli auth to be disabled when virtual auths are synthesized")
+	}
+	expectedOAuthHash := diff.ComputeExcludedModelsHash([]string{"Foo", "bar"})
+	if geminiPrimary.Attributes["excluded_models_hash"] != expectedOAuthHash {
+		t.Fatalf("expected OAuth excluded hash %s, got %s", expectedOAuthHash, geminiPrimary.Attributes["excluded_models_hash"])
+	}
+	if geminiPrimary.Attributes["auth_kind"] != "oauth" {
+		t.Fatalf("expected auth_kind=oauth, got %s", geminiPrimary.Attributes["auth_kind"])
+	}
+
+	if len(virtuals) != 2 {
+		t.Fatalf("expected 2 virtual auths, got %d", len(virtuals))
+	}
+	for _, v := range virtuals {
+		if v.Attributes["gemini_virtual_parent"] != geminiPrimary.ID {
+			t.Fatalf("virtual auth missing parent link to %s", geminiPrimary.ID)
+		}
+		if v.Attributes["excluded_models_hash"] != expectedOAuthHash {
+			t.Fatalf("expected virtual excluded hash %s, got %s", expectedOAuthHash, v.Attributes["excluded_models_hash"])
+		}
+		if v.Status != coreauth.StatusActive {
+			t.Fatalf("expected virtual auth to be active, got %s", v.Status)
+		}
 	}
 }
 
@@ -181,9 +218,8 @@ func TestReloadConfigIfChanged_TriggersOnChangeAndSkipsUnchanged(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	writeConfig := func(port int, allowRemote bool) {
 		cfg := &config.Config{
-			Port:               port,
-			AuthDir:            authDir,
-			CredentialInFlight: config.DefaultCredentialInFlightConfig(),
+			Port:    port,
+			AuthDir: authDir,
 			RemoteManagement: config.RemoteManagement{
 				AllowRemote: allowRemote,
 			},
@@ -1357,15 +1393,13 @@ func TestReloadConfigFiltersAffectedOAuthProviders(t *testing.T) {
 	}
 
 	oldCfg := &config.Config{
-		AuthDir:            authDir,
-		CredentialInFlight: config.DefaultCredentialInFlightConfig(),
+		AuthDir: authDir,
 		OAuthExcludedModels: map[string][]string{
 			"provider-a": {"m1"},
 		},
 	}
 	newCfg := &config.Config{
-		AuthDir:            authDir,
-		CredentialInFlight: config.DefaultCredentialInFlightConfig(),
+		AuthDir: authDir,
 		OAuthExcludedModels: map[string][]string{
 			"provider-a": {"m2"},
 		},
@@ -1421,14 +1455,12 @@ func TestReloadConfigTriggersCallbackForMaxRetryCredentialsChange(t *testing.T) 
 
 	oldCfg := &config.Config{
 		AuthDir:             authDir,
-		CredentialInFlight:  config.DefaultCredentialInFlightConfig(),
 		MaxRetryCredentials: 0,
 		RequestRetry:        1,
 		MaxRetryInterval:    5,
 	}
 	newCfg := &config.Config{
 		AuthDir:             authDir,
-		CredentialInFlight:  config.DefaultCredentialInFlightConfig(),
 		MaxRetryCredentials: 2,
 		RequestRetry:        1,
 		MaxRetryInterval:    5,
@@ -1515,13 +1547,11 @@ func TestNormalizeAuthNil(t *testing.T) {
 
 // stubStore implements coreauth.Store plus watcher-specific persistence helpers.
 type stubStore struct {
-	mu              sync.Mutex
 	authDir         string
-	cfgPersisted    int
-	authPersisted   int
+	cfgPersisted    int32
+	authPersisted   int32
 	lastAuthMessage string
 	lastAuthPaths   []string
-	persisted       chan struct{}
 }
 
 func (s *stubStore) List(context.Context) ([]*coreauth.Auth, error) { return nil, nil }
@@ -1530,38 +1560,16 @@ func (s *stubStore) Save(context.Context, *coreauth.Auth) (string, error) {
 }
 func (s *stubStore) Delete(context.Context, string) error { return nil }
 func (s *stubStore) PersistConfig(context.Context) error {
-	s.mu.Lock()
-	s.cfgPersisted++
-	s.mu.Unlock()
-	s.signalPersisted()
+	atomic.AddInt32(&s.cfgPersisted, 1)
 	return nil
 }
 func (s *stubStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	atomic.AddInt32(&s.authPersisted, 1)
 	s.lastAuthMessage = message
-	s.lastAuthPaths = append([]string(nil), paths...)
-	s.authPersisted++
-	s.signalPersisted()
+	s.lastAuthPaths = paths
 	return nil
 }
 func (s *stubStore) AuthDir() string { return s.authDir }
-
-func (s *stubStore) signalPersisted() {
-	if s.persisted == nil {
-		return
-	}
-	select {
-	case s.persisted <- struct{}{}:
-	default:
-	}
-}
-
-func (s *stubStore) persistenceSnapshot() (cfgPersisted, authPersisted int, message string, paths []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cfgPersisted, s.authPersisted, s.lastAuthMessage, append([]string(nil), s.lastAuthPaths...)
-}
 
 func TestNewWatcherDetectsPersisterAndAuthDir(t *testing.T) {
 	tmp := t.TempDir()
@@ -1583,33 +1591,26 @@ func TestNewWatcherDetectsPersisterAndAuthDir(t *testing.T) {
 }
 
 func TestPersistConfigAndAuthAsyncInvokePersister(t *testing.T) {
-	store := &stubStore{persisted: make(chan struct{}, 2)}
 	w := &Watcher{
-		storePersister: store,
+		storePersister: &stubStore{},
 	}
 
 	w.persistConfigAsync()
 	w.persistAuthAsync("msg", " a ", "", "b ")
 
-	for range 2 {
-		select {
-		case <-store.persisted:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for asynchronous persistence")
-		}
+	time.Sleep(30 * time.Millisecond)
+	store := w.storePersister.(*stubStore)
+	if atomic.LoadInt32(&store.cfgPersisted) != 1 {
+		t.Fatalf("expected PersistConfig to be called once, got %d", store.cfgPersisted)
 	}
-	cfgPersisted, authPersisted, message, paths := store.persistenceSnapshot()
-	if cfgPersisted != 1 {
-		t.Fatalf("expected PersistConfig to be called once, got %d", cfgPersisted)
+	if atomic.LoadInt32(&store.authPersisted) != 1 {
+		t.Fatalf("expected PersistAuthFiles to be called once, got %d", store.authPersisted)
 	}
-	if authPersisted != 1 {
-		t.Fatalf("expected PersistAuthFiles to be called once, got %d", authPersisted)
+	if store.lastAuthMessage != "msg" {
+		t.Fatalf("unexpected auth message: %s", store.lastAuthMessage)
 	}
-	if message != "msg" {
-		t.Fatalf("unexpected auth message: %s", message)
-	}
-	if len(paths) != 2 || paths[0] != "a" || paths[1] != "b" {
-		t.Fatalf("unexpected filtered paths: %#v", paths)
+	if len(store.lastAuthPaths) != 2 || store.lastAuthPaths[0] != "a" || store.lastAuthPaths[1] != "b" {
+		t.Fatalf("unexpected filtered paths: %#v", store.lastAuthPaths)
 	}
 }
 
@@ -1632,21 +1633,13 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 	w.scheduleConfigReload()
 	w.scheduleConfigReload()
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		w.clientsMutex.RLock()
-		hashSet := w.lastConfigHash != ""
-		w.clientsMutex.RUnlock()
-		if hashSet {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for debounced config reload")
-		}
-		time.Sleep(10 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
+
+	if atomic.LoadInt32(&reloads) != 1 {
+		t.Fatalf("expected single debounced reload, got %d", reloads)
 	}
-	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected single debounced reload, got %d", got)
+	if w.lastConfigHash == "" {
+		t.Fatal("expected lastConfigHash to be set after reload")
 	}
 }
 

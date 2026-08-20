@@ -32,16 +32,15 @@ func cliproxyHostCall(hostCtx unsafe.Pointer, method *C.char, request *C.uint8_t
 	if !okHost {
 		return 1
 	}
-	entry, okHost := rawHost.(dynamicHostCallbackEntry)
-	if !okHost || entry.host == nil {
+	host, okHost := rawHost.(*Host)
+	if !okHost || host == nil {
 		return 1
 	}
 	var requestBytes []byte
 	if request != nil && requestLen > 0 {
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
-	resp, errCall := entry.host.callFromPlugin(ctx, C.GoString(method), requestBytes)
+	resp, errCall := host.callFromPlugin(context.Background(), C.GoString(method), requestBytes)
 	if errCall != nil {
 		resp = marshalRPCError("host_call_failed", errCall.Error())
 	}
