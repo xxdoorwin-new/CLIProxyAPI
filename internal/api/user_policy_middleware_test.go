@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usermanagement"
@@ -118,4 +121,74 @@ func createAPITestUser(t *testing.T, store *usermanagement.SQLiteStore) *userman
 		t.Fatalf("CreateUser() error = %v", err)
 	}
 	return user
+}
+
+type exhaustedQuotaStore struct{}
+
+func (exhaustedQuotaStore) SetQuotaPolicy(context.Context, usermanagement.SetQuotaPolicyParams) (*usermanagement.QuotaPolicy, error) {
+	return nil, nil
+}
+
+func (exhaustedQuotaStore) GetQuotaPolicy(context.Context, usermanagement.UserID) (*usermanagement.QuotaPolicy, error) {
+	return &usermanagement.QuotaPolicy{
+		Period:       usermanagement.QuotaPeriodMonthly,
+		LimitCredits: 1,
+	}, nil
+}
+
+func (exhaustedQuotaStore) UpsertQuotaRollup(context.Context, usermanagement.UpsertQuotaRollupParams) (*usermanagement.QuotaRollup, error) {
+	return nil, nil
+}
+
+func (exhaustedQuotaStore) GetQuotaRollup(context.Context, usermanagement.UserID, usermanagement.QuotaPeriod, time.Time) (*usermanagement.QuotaRollup, error) {
+	return &usermanagement.QuotaRollup{UsedCredits: 1}, nil
+}
+
+func TestUserQuotaMiddlewareReturnsCompatibleQuotaError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	quota := usermanagement.NewQuotaService(exhaustedQuotaStore{}, exhaustedQuotaStore{})
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "Claude", path: "/v1/messages"},
+		{name: "Codex", path: "/backend-api/codex/responses"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.POST(tc.path,
+				func(c *gin.Context) {
+					c.Set("accessMetadata", map[string]string{"user_id": "quota-test-user"})
+					c.Set("userRequestedModel", "test-model")
+				},
+				UserQuotaMiddleware(quota),
+				func(c *gin.Context) {
+					t.Fatal("request reached the upstream handler after quota exhaustion")
+				},
+			)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+			}
+			var body struct {
+				Type  string `json:"type"`
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+					Code    string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v; body = %s", err, rec.Body.String())
+			}
+			if body.Type != "error" || body.Error.Type != "rate_limit_error" || body.Error.Code != "user_quota_exhausted" || body.Error.Message != userQuotaExhaustedMessage {
+				t.Fatalf("unexpected quota response: %#v", body)
+			}
+		})
+	}
 }

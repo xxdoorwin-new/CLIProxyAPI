@@ -11,6 +11,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const userQuotaExhaustedMessage = "Your configured user quota has been exhausted. Please contact your administrator."
+
 // UserQuotaMiddleware checks whether the authenticated user has remaining credits before
 // forwarding the request to upstream provider routing. It runs after UserModelPolicyMiddleware
 // so that the "userRequestedModel" context value is already set for actual model calls.
@@ -39,7 +41,15 @@ func UserQuotaMiddleware(quota *usermanagement.QuotaService) gin.HandlerFunc {
 			return
 		}
 		if !available {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "quota exhausted"})
+			// This hybrid error shape is accepted by both OpenAI/Codex and Anthropic/Claude clients.
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "rate_limit_error",
+					"message": userQuotaExhaustedMessage,
+					"code":    "user_quota_exhausted",
+				},
+			})
 			return
 		}
 		c.Next()
