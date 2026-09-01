@@ -82,7 +82,7 @@ func UserModelPolicyMiddleware(policy *usermanagement.ModelPolicyService) gin.Ha
 			return
 		}
 		if !allowed {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "model is not allowed for this user"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "当前模型不可用"})
 			return
 		}
 		c.Set("userRequestedModel", model)

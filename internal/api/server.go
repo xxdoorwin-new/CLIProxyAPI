@@ -661,6 +661,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/users/pending", s.handleAdminListPendingUsers)
 		mgmt.GET("/users/:id", s.handleAdminGetUser)
 		mgmt.POST("/users/:id/approve", s.handleAdminApproveUser)
+		mgmt.PATCH("/users/:id/role", s.handleAdminAssignUserRole)
 		mgmt.POST("/users/:id/reject", s.handleAdminRejectUser)
 		mgmt.POST("/users/:id/suspend", s.handleAdminSuspendUser)
 		mgmt.POST("/users/:id/reactivate", s.handleAdminReactivateUser)
@@ -788,12 +789,13 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
+		mgmt.GET("/oauth-callback", s.mgmt.GetOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
 }
 
 func (s *Server) handleManagementModels(c *gin.Context) {
-	models := registry.GetGlobalRegistry().GetAvailableModels("openai")
+	models := registry.GetGlobalRegistry().GetAllAvailableModels()
 	writeOpenAIModels(c, models)
 }
 
@@ -1254,12 +1256,28 @@ func (s *Server) filterModelListForUser(c *gin.Context, models []map[string]any)
 		log.Errorf("failed to resolve user model policy: %v", err)
 		return []map[string]any{}, true
 	}
+	disabled := make(map[string]struct{}, len(resolved.DisabledModels))
+	for _, model := range resolved.DisabledModels {
+		normalized := strings.ToLower(normalizeClientModelName(model))
+		if normalized != "" {
+			disabled[normalized] = struct{}{}
+		}
+	}
+	visibleModels := models
+	if len(disabled) > 0 {
+		visibleModels = make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			if !modelMatchesSet(model, disabled) {
+				visibleModels = append(visibleModels, model)
+			}
+		}
+	}
 	if resolved.AllowAll || len(resolved.Models) == 0 {
-		return cloneModelMaps(models), true
+		return cloneModelMaps(visibleModels), true
 	}
 	allowed := make(map[string]struct{}, len(resolved.Models))
 	for _, model := range resolved.Models {
-		normalized := normalizeClientModelName(model)
+		normalized := strings.ToLower(normalizeClientModelName(model))
 		if normalized != "" {
 			allowed[normalized] = struct{}{}
 		}
@@ -1268,7 +1286,7 @@ func (s *Server) filterModelListForUser(c *gin.Context, models []map[string]any)
 		return []map[string]any{}, true
 	}
 	filtered := make([]map[string]any, 0, len(models))
-	for _, model := range models {
+	for _, model := range visibleModels {
 		if modelAllowedBySet(model, allowed) {
 			filtered = append(filtered, cloneModelMap(model))
 		}
@@ -1349,8 +1367,12 @@ func normalizeGeminiModelList(rawModels []map[string]any) []map[string]any {
 }
 
 func modelAllowedBySet(model map[string]any, allowed map[string]struct{}) bool {
+	return modelMatchesSet(model, allowed)
+}
+
+func modelMatchesSet(model map[string]any, names map[string]struct{}) bool {
 	for _, candidate := range modelNameCandidates(model) {
-		if _, ok := allowed[normalizeClientModelName(candidate)]; ok {
+		if _, ok := names[strings.ToLower(normalizeClientModelName(candidate))]; ok {
 			return true
 		}
 	}

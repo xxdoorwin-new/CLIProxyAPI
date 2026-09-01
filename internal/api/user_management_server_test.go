@@ -315,6 +315,20 @@ func TestAdminUserLifecycleRoutes(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v0/management/users/"+string(user.ID)+"/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	server.engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign role status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if err = json.Unmarshal(rec.Body.Bytes(), &userPayload); err != nil {
+		t.Fatalf("decode assign role response: %v", err)
+	}
+	if userPayload.User.Role != "user" {
+		t.Fatalf("assigned user role = %#v", userPayload.User)
+	}
+
+	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v0/management/users/"+string(user.ID), nil)
 	req.Header.Set("X-Management-Key", "test-management-key")
 	server.engine.ServeHTTP(rec, req)
@@ -579,7 +593,7 @@ func TestAdminPolicyQuotaAndPricingRoutes(t *testing.T) {
 		return rec
 	}
 
-	rec := authRequest(http.MethodPut, "/v0/management/users/"+string(user.ID)+"/model-policy", `{"models":["gpt-5","gpt-5"],"allow_all":false}`)
+	rec := authRequest(http.MethodPut, "/v0/management/users/"+string(user.ID)+"/model-policy", `{"models":["gpt-5","gpt-5"],"disabled_models":["gpt-4"],"allow_all":false}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("set user model policy status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
@@ -591,6 +605,9 @@ func TestAdminPolicyQuotaAndPricingRoutes(t *testing.T) {
 	}
 	if len(policyPayload.ModelPolicy.Models) != 1 || policyPayload.ModelPolicy.Models[0] != "gpt-5" {
 		t.Fatalf("model policy = %#v", policyPayload.ModelPolicy)
+	}
+	if len(policyPayload.ModelPolicy.DisabledModels) != 1 || policyPayload.ModelPolicy.DisabledModels[0] != "gpt-4" {
+		t.Fatalf("disabled model policy = %#v", policyPayload.ModelPolicy)
 	}
 
 	keyPolicyPath := "/v0/management/users/" + string(user.ID) + "/api-keys/" + string(key.ID) + "/model-policy"

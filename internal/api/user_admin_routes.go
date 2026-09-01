@@ -79,6 +79,30 @@ func (s *Server) handleAdminApproveUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": toUserResponse(user)})
 }
 
+func (s *Server) handleAdminAssignUserRole(c *gin.Context) {
+	store, ok := s.currentUserStore(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	user, err := usermanagement.NewUserLifecycleService(store, store).AssignRole(
+		c.Request.Context(),
+		usermanagement.UserID(c.Param("id")),
+		usermanagement.UserRole(strings.TrimSpace(body.Role)),
+	)
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": toUserResponse(user)})
+}
+
 func (s *Server) handleAdminRejectUser(c *gin.Context) {
 	s.handleAdminUserStatusAction(c, func(service *usermanagement.UserLifecycleService, userID usermanagement.UserID) (*usermanagement.User, error) {
 		return service.RejectUser(c.Request.Context(), userID)

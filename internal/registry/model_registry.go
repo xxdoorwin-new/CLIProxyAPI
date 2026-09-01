@@ -786,6 +786,53 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 	return models
 }
 
+// GetAllAvailableModels returns the models currently available through every
+// registered provider, converted to the generic OpenAI-compatible model shape.
+// Models exposed by multiple providers are returned only once.
+func (r *ModelRegistry) GetAllAvailableModels() []map[string]any {
+	r.mutex.RLock()
+	providers := make(map[string]struct{}, len(r.clientProviders))
+	for _, provider := range r.clientProviders {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider != "" {
+			providers[provider] = struct{}{}
+		}
+	}
+	r.mutex.RUnlock()
+
+	providerNames := make([]string, 0, len(providers))
+	for provider := range providers {
+		providerNames = append(providerNames, provider)
+	}
+	sort.Strings(providerNames)
+
+	modelsByID := make(map[string]map[string]any)
+	for _, provider := range providerNames {
+		for _, model := range r.GetAvailableModelsByProvider(provider) {
+			if model == nil || strings.TrimSpace(model.ID) == "" {
+				continue
+			}
+			if _, exists := modelsByID[model.ID]; exists {
+				continue
+			}
+			modelsByID[model.ID] = r.convertModelToMap(model, "openai")
+		}
+	}
+
+	models := make([]map[string]any, 0, len(modelsByID))
+	for _, model := range modelsByID {
+		if model != nil {
+			models = append(models, model)
+		}
+	}
+	sort.Slice(models, func(i, j int) bool {
+		left, _ := models[i]["id"].(string)
+		right, _ := models[j]["id"].(string)
+		return left < right
+	})
+	return models
+}
+
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
 	models := make([]map[string]any, 0, len(r.models))
 	var expiresAt time.Time

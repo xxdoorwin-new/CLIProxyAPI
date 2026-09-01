@@ -51,6 +51,41 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	}
 }
 
+func TestGetOAuthCallbackInfersAnthropicProviderFromSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := filepath.Join(t.TempDir(), "missing-auth")
+	state := "test-anthropic-state"
+	RegisterOAuthSession(state, "anthropic")
+	defer CompleteOAuthSession(state)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	callbackPath := filepath.Join(authDir, ".oauth-anthropic-"+state+".oauth")
+	data, errRead := os.ReadFile(callbackPath)
+	if errRead != nil {
+		t.Fatalf("expected callback file to be written: %v", errRead)
+	}
+
+	var payload oauthCallbackFilePayload
+	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
+		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
+	}
+	if payload.State != state || payload.Code != "test-code" || payload.Error != "" {
+		t.Fatalf("unexpected callback payload: %+v", payload)
+	}
+}
+
 func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallbackProviders(t *testing.T) {
 	providers := []string{"anthropic", "codex", "gemini", "antigravity", "xai"}
 	for _, provider := range providers {

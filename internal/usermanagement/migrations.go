@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const CurrentSQLiteSchemaVersion = 3
+const CurrentSQLiteSchemaVersion = 4
 
 type SQLiteMigration struct {
 	Version    int
@@ -219,6 +219,13 @@ var sqliteMigrations = []SQLiteMigration{
 		Statements: []string{
 			`ALTER TABLE usage_ledger ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0)`,
 			`CREATE INDEX IF NOT EXISTS idx_usage_ledger_created ON usage_ledger(created_at)`,
+		},
+	},
+	{
+		Version: 4,
+		Name:    "add_user_disabled_models",
+		Statements: []string{
+			`ALTER TABLE model_policies ADD COLUMN disabled_models_json TEXT NOT NULL DEFAULT '[]'`,
 		},
 	},
 }

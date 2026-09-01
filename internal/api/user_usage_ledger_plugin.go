@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
@@ -14,6 +15,8 @@ import (
 )
 
 const userUsageLedgerPluginName = "user-management-ledger"
+
+const userUsageLedgerWriteTimeout = 5 * time.Second
 
 type userUsageLedgerPlugin struct {
 	recorder *usermanagement.UsageRecorder
@@ -43,8 +46,14 @@ func (p *userUsageLedgerPlugin) HandleUsage(ctx context.Context, record coreusag
 	if userID == "" || keyID == "" {
 		return
 	}
+	// Usage callbacks can run after the HTTP request has completed. Keep the
+	// request context values (user identity, request ID, status holder), but do
+	// not let request cancellation abort the ledger write. Bound the detached
+	// database operation so a locked/unavailable SQLite store cannot hang it.
+	ledgerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), userUsageLedgerWriteTimeout)
+	defer cancel()
 	statusCode := internallogging.GetResponseStatus(ctx)
-	_, err := p.recorder.RecordUsage(ctx, usermanagement.RecordUsageParams{
+	_, err := p.recorder.RecordUsage(ledgerCtx, usermanagement.RecordUsageParams{
 		UserID:          userID,
 		APIKeyID:        keyID,
 		RequestID:       internallogging.GetRequestID(ctx),

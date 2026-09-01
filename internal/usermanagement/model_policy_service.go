@@ -15,6 +15,7 @@ type ResolvedModelPolicy struct {
 	SubjectID   string
 	AllowAll    bool
 	Models      []string
+	DisabledModels []string
 }
 
 func NewModelPolicyService(policies ModelPolicyStore) *ModelPolicyService {
@@ -22,11 +23,16 @@ func NewModelPolicyService(policies ModelPolicyStore) *ModelPolicyService {
 }
 
 func (s *ModelPolicyService) SetUserModels(ctx context.Context, userID UserID, allowAll bool, models []string) (*ModelPolicy, error) {
+	return s.SetUserModelsWithDisabled(ctx, userID, allowAll, models, nil)
+}
+
+func (s *ModelPolicyService) SetUserModelsWithDisabled(ctx context.Context, userID UserID, allowAll bool, models, disabledModels []string) (*ModelPolicy, error) {
 	return s.setPolicy(ctx, SetModelPolicyParams{
 		SubjectType: PolicySubjectUser,
 		SubjectID:   string(userID),
 		AllowAll:    allowAll,
 		Models:      NormalizeModelList(models),
+		DisabledModels: NormalizeModelList(disabledModels),
 	})
 }
 
@@ -36,6 +42,7 @@ func (s *ModelPolicyService) SetAPIKeyModels(ctx context.Context, keyID APIKeyID
 		SubjectID:   string(keyID),
 		AllowAll:    allowAll,
 		Models:      NormalizeModelList(models),
+		DisabledModels: nil,
 	})
 }
 
@@ -44,16 +51,21 @@ func (s *ModelPolicyService) ResolveForUser(ctx context.Context, userID UserID) 
 }
 
 func (s *ModelPolicyService) ResolveForAPIKey(ctx context.Context, userID UserID, keyID APIKeyID) (*ResolvedModelPolicy, error) {
+	userPolicy, err := s.resolve(ctx, PolicySubjectUser, string(userID))
+	if err != nil {
+		return nil, err
+	}
 	if keyID != "" {
 		policy, err := s.resolve(ctx, PolicySubjectAPIKey, string(keyID))
 		if err != nil {
 			return nil, err
 		}
 		if policy.SubjectID != "" {
+			policy.DisabledModels = append([]string(nil), userPolicy.DisabledModels...)
 			return policy, nil
 		}
 	}
-	return s.ResolveForUser(ctx, userID)
+	return userPolicy, nil
 }
 
 func (s *ModelPolicyService) IsModelAllowed(ctx context.Context, userID UserID, keyID APIKeyID, model string) (bool, *ResolvedModelPolicy, error) {
@@ -61,16 +73,21 @@ func (s *ModelPolicyService) IsModelAllowed(ctx context.Context, userID UserID, 
 	if err != nil {
 		return false, nil, err
 	}
+	model = normalizePolicyModelName(model)
+	if model == "" {
+		return false, policy, nil
+	}
+	for _, disabled := range policy.DisabledModels {
+		if normalizePolicyModelName(disabled) == model {
+			return false, policy, nil
+		}
+	}
 	// AllowAll explicitly set, or no models restriction configured (empty list) — allow everything.
 	if policy.AllowAll || len(policy.Models) == 0 {
 		return true, policy, nil
 	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return false, policy, nil
-	}
 	for _, allowed := range policy.Models {
-		if allowed == model {
+		if normalizePolicyModelName(allowed) == model {
 			return true, policy, nil
 		}
 	}
@@ -97,6 +114,7 @@ func (s *ModelPolicyService) resolve(ctx context.Context, subjectType PolicySubj
 			SubjectID:   "",
 			AllowAll:    true,
 			Models:      nil,
+			DisabledModels: nil,
 		}, nil
 	}
 	if err != nil {
@@ -107,5 +125,12 @@ func (s *ModelPolicyService) resolve(ctx context.Context, subjectType PolicySubj
 		SubjectID:   policy.SubjectID,
 		AllowAll:    policy.AllowAll,
 		Models:      append([]string(nil), policy.Models...),
+		DisabledModels: append([]string(nil), policy.DisabledModels...),
 	}, nil
+}
+
+func normalizePolicyModelName(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.TrimPrefix(model, "models/")
+	return strings.ToLower(model)
 }

@@ -217,6 +217,64 @@ func TestManagementModelsReturnsServerModelRegistry(t *testing.T) {
 	t.Fatalf("management-test-model missing from response: %s", rr.Body.String())
 }
 
+func TestManagementModelsReturnsModelsFromAllProviders(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	modelRegistry := registry.GetGlobalRegistry()
+	clientIDs := []string{
+		"test-management-models-codex",
+		"test-management-models-claude",
+		"test-management-models-gemini",
+	}
+	modelRegistry.RegisterClient(clientIDs[0], "codex", []*registry.ModelInfo{
+		{ID: "management-codex-model", Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	modelRegistry.RegisterClient(clientIDs[1], "claude", []*registry.ModelInfo{
+		{ID: "management-claude-model", Object: "model", OwnedBy: "anthropic", Type: "claude"},
+	})
+	modelRegistry.RegisterClient(clientIDs[2], "gemini", []*registry.ModelInfo{
+		{ID: "management-gemini-model", Object: "model", OwnedBy: "google", Type: "gemini"},
+	})
+	t.Cleanup(func() {
+		for _, clientID := range clientIDs {
+			modelRegistry.UnregisterClient(clientID)
+		}
+	})
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/models", nil)
+	req.Header.Set("Authorization", "Bearer test-management-key")
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, rr.Body.String())
+	}
+
+	seen := make(map[string]bool, len(payload.Data))
+	for _, model := range payload.Data {
+		seen[model.ID] = true
+	}
+	for _, modelID := range []string{
+		"management-codex-model",
+		"management-claude-model",
+		"management-gemini-model",
+	} {
+		if !seen[modelID] {
+			t.Fatalf("model %q missing from response: %s", modelID, rr.Body.String())
+		}
+	}
+}
+
 func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

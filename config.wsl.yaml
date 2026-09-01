@@ -51,7 +51,7 @@ debug: false
 # Enable pprof HTTP debug server (host:port). Keep it bound to localhost for safety.
 pprof:
   enable: false
-  addr: "127.0.0.1:8316"
+  addr: "172.26.163.8:8316"
 # When true, disable high-overhead HTTP middleware features to reduce per-request memory usage under high concurrency.
 commercial-mode: false
 # When true, write application logs to rotating files instead of stdout
@@ -124,10 +124,48 @@ nonstream-keepalive-interval: 0
 gemini-api-key: []
 codex-api-key:
   - api-key: sk-b0DSAqRwgJqTFA9zM
-    base-url: https://cli.sunnysong.cloud:8817/
+    base-url: https://cli.sunnysong.cloud:8817/v1
     models:
+      - name: claude-3-7-sonnet-20250219
+        alias: ""
+      - name: gpt-5.3-codex-spark
+        alias: ""
+      - name: gpt-image-2
+        alias: ""
       - name: gpt-5.4
+        alias: ""
+      - name: gpt-5.4-mini
+        alias: ""
+      - name: gpt-5.6-sol
+        alias: ""
+      - name: gpt-5.6-terra
+        alias: ""
+      - name: codex-auto-review
+        alias: ""
+      - name: gpt-5.5
+        alias: ""
+      - name: gpt-5.6-luna
+        alias: ""
     websockets: true
+claude-api-key:
+  - api-key: sk-b0DSAqRwgJqTFA9zM
+    base-url: https://cli.sunnysong.cloud:8817/v1
+    models:
+      - name: claude-sonnet-4-6
+      - name: claude-haiku-4-5-20251001
+      - name: claude-opus-4-5-20251101
+      - name: claude-opus-4-8
+      - name: claude-opus-5
+      - name: claude-sonnet-5
+      - name: claude-opus-4-20250514
+      - name: claude-3-7-sonnet-20250219
+      - name: claude-opus-4-7
+      - name: claude-fable-5
+      - name: claude-opus-4-1-20250805
+      - name: claude-sonnet-4-20250514
+      - name: claude-3-5-haiku-20241022
+      - name: claude-sonnet-4-5-20250929
+      - name: claude-opus-4-6
 
 # Signature cache validation for thinking blocks (Antigravity/Claude).
 # When true (default), cached signatures are preferred and validated.

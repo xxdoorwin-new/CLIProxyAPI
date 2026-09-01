@@ -38,6 +38,13 @@ func TestOpenSQLiteStoreConfiguresWALAndMigrates(t *testing.T) {
 	assertTableExists(t, store.DB(), "sessions")
 	assertTableExists(t, store.DB(), "api_keys")
 	assertTableExists(t, store.DB(), "model_policies")
+	var disabledModelsColumn int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('model_policies') WHERE name = 'disabled_models_json'`).Scan(&disabledModelsColumn); err != nil {
+		t.Fatalf("query disabled model column: %v", err)
+	}
+	if disabledModelsColumn != 1 {
+		t.Fatal("model_policies.disabled_models_json column is missing")
+	}
 	assertTableExists(t, store.DB(), "quota_policies")
 	assertTableExists(t, store.DB(), "pricing_rules")
 	assertTableExists(t, store.DB(), "usage_ledger")

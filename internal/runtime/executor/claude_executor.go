@@ -164,7 +164,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := thinking.ParseSuffix(thinking.NormalizeClaudeModelName(req.Model)).ModelName
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -236,7 +236,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	url := claudeAPIEndpointURL(baseURL, "messages") + "?beta=true"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {
 		return resp, err
@@ -347,7 +347,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := thinking.ParseSuffix(thinking.NormalizeClaudeModelName(req.Model)).ModelName
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -413,7 +413,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	url := claudeAPIEndpointURL(baseURL, "messages") + "?beta=true"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {
 		return nil, err
@@ -620,7 +620,7 @@ func validateClaudeStreamingResponse(data []byte) error {
 }
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel := thinking.ParseSuffix(thinking.NormalizeClaudeModelName(req.Model)).ModelName
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -650,7 +650,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
 
-	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
+	url := claudeAPIEndpointURL(baseURL, "messages/count_tokens") + "?beta=true"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
@@ -1083,6 +1083,19 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		}
 	}
 	return
+}
+
+// claudeAPIEndpointURL builds an Anthropic API endpoint from either a host
+// base URL (https://api.anthropic.com) or a versioned base URL
+// (https://proxy.example.com/v1). API-provider configurations commonly use
+// the latter, so avoid generating an invalid /v1/v1/... path.
+func claudeAPIEndpointURL(baseURL, endpoint string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	endpoint = strings.TrimLeft(strings.TrimSpace(endpoint), "/")
+	if strings.HasSuffix(strings.ToLower(baseURL), "/v1") {
+		return baseURL + "/" + endpoint
+	}
+	return baseURL + "/v1/" + endpoint
 }
 
 func checkSystemInstructions(payload []byte) []byte {

@@ -53,6 +53,9 @@ func TestUserUsageLedgerPluginWritesUserLinkedLedger(t *testing.T) {
 	ctx = internallogging.WithRequestID(ctx, "req-plugin")
 	ctx = internallogging.WithResponseStatusHolder(ctx)
 	internallogging.SetResponseStatus(ctx, http.StatusOK)
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	ctx = cancelCtx
 
 	plugin := &userUsageLedgerPlugin{
 		recorder: usermanagement.NewUsageRecorder(store, usermanagement.UsageRecorderConfig{MissingUsageCredits: 5}),

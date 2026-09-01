@@ -144,6 +144,11 @@ func (p SetModelPolicyParams) Validate() error {
 			}
 		}
 	}
+	for _, model := range p.DisabledModels {
+		if strings.TrimSpace(model) == "" {
+			return invalid("model policy contains an empty disabled model name")
+		}
+	}
 	return nil
 }
 

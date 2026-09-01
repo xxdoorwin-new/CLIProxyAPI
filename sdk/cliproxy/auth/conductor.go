@@ -571,6 +571,7 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 			return []string{homeModel}
 		}
 	}
+	routeModel = normalizeClaudeRouteModel(auth, routeModel)
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	requestedModel = m.applyOAuthModelAlias(auth, requestedModel)
 	if pool := m.resolveOpenAICompatUpstreamModelPool(auth, requestedModel); len(pool) > 0 {
@@ -588,6 +589,7 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 }
 
 func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
+	routeModel = normalizeClaudeRouteModel(auth, routeModel)
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	if strings.TrimSpace(requestedModel) == "" {
 		requestedModel = strings.TrimSpace(routeModel)
@@ -726,7 +728,7 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	if registryRef == nil || auth == nil {
 		return true
 	}
-	routeKey := canonicalModelKey(routeModel)
+	routeKey := canonicalModelKey(normalizeClaudeRouteModel(auth, routeModel))
 	if routeKey == "" {
 		return true
 	}
@@ -735,6 +737,13 @@ func (m *Manager) authSupportsRouteModel(registryRef *registry.ModelRegistry, au
 	}
 	selectionKey := m.selectionModelKeyForAuth(auth, routeModel)
 	return selectionKey != "" && selectionKey != routeKey && registryRef.ClientSupportsModel(auth.ID, selectionKey)
+}
+
+func normalizeClaudeRouteModel(auth *Auth, model string) string {
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
+		return thinking.NormalizeClaudeModelName(model)
+	}
+	return model
 }
 
 func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {

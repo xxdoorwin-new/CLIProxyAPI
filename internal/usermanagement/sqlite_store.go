@@ -540,6 +540,7 @@ func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, id APIKeyID) error {
 
 func (s *SQLiteStore) SetModelPolicy(ctx context.Context, params SetModelPolicyParams) (*ModelPolicy, error) {
 	params.Models = NormalizeModelList(params.Models)
+	params.DisabledModels = NormalizeModelList(params.DisabledModels)
 	if err := params.Validate(); err != nil {
 		return nil, err
 	}
@@ -548,14 +549,19 @@ func (s *SQLiteStore) SetModelPolicy(ctx context.Context, params SetModelPolicyP
 	if err != nil {
 		return nil, fmt.Errorf("%w: models cannot be encoded: %v", ErrInvalid, err)
 	}
+	disabledModels, err := json.Marshal(params.DisabledModels)
+	if err != nil {
+		return nil, fmt.Errorf("%w: disabled models cannot be encoded: %v", ErrInvalid, err)
+	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO model_policies (
-		subject_type, subject_id, allow_all, models_json, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?)
+		subject_type, subject_id, allow_all, models_json, disabled_models_json, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(subject_type, subject_id) DO UPDATE SET
 		allow_all = excluded.allow_all,
 		models_json = excluded.models_json,
+		disabled_models_json = excluded.disabled_models_json,
 		updated_at = excluded.updated_at`,
-		params.SubjectType, params.SubjectID, boolInt(params.AllowAll), string(models), formatTime(now), formatTime(now),
+		params.SubjectType, params.SubjectID, boolInt(params.AllowAll), string(models), string(disabledModels), formatTime(now), formatTime(now),
 	)
 	if err != nil {
 		return nil, mapSQLiteWriteError(err)
@@ -564,7 +570,7 @@ func (s *SQLiteStore) SetModelPolicy(ctx context.Context, params SetModelPolicyP
 }
 
 func (s *SQLiteStore) GetModelPolicy(ctx context.Context, subjectType PolicySubjectType, subjectID string) (*ModelPolicy, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT subject_type, subject_id, allow_all, models_json, created_at, updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT subject_type, subject_id, allow_all, models_json, disabled_models_json, created_at, updated_at
 		FROM model_policies WHERE subject_type = ? AND subject_id = ?`, subjectType, subjectID)
 	return scanModelPolicy(row)
 }
@@ -979,8 +985,8 @@ func scanAPIKey(row scanner) (*APIKey, error) {
 func scanModelPolicy(row scanner) (*ModelPolicy, error) {
 	var policy ModelPolicy
 	var allowAll int
-	var modelsJSON, createdAt, updatedAt string
-	err := row.Scan(&policy.SubjectType, &policy.SubjectID, &allowAll, &modelsJSON, &createdAt, &updatedAt)
+	var modelsJSON, disabledModelsJSON, createdAt, updatedAt string
+	err := row.Scan(&policy.SubjectType, &policy.SubjectID, &allowAll, &modelsJSON, &disabledModelsJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -990,6 +996,11 @@ func scanModelPolicy(row scanner) (*ModelPolicy, error) {
 	if modelsJSON != "" {
 		if err = json.Unmarshal([]byte(modelsJSON), &policy.Models); err != nil {
 			return nil, fmt.Errorf("user management sqlite: decode model policy: %w", err)
+		}
+	}
+	if disabledModelsJSON != "" {
+		if err = json.Unmarshal([]byte(disabledModelsJSON), &policy.DisabledModels); err != nil {
+			return nil, fmt.Errorf("user management sqlite: decode disabled model policy: %w", err)
 		}
 	}
 	policy.AllowAll = allowAll == 1

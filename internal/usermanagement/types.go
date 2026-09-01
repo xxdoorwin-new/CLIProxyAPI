@@ -164,6 +164,7 @@ type ModelPolicy struct {
 	SubjectID   string
 	AllowAll    bool
 	Models      []string
+	DisabledModels []string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -173,6 +174,7 @@ type SetModelPolicyParams struct {
 	SubjectID   string
 	AllowAll    bool
 	Models      []string
+	DisabledModels []string
 }
 
 type QuotaPolicy struct {
