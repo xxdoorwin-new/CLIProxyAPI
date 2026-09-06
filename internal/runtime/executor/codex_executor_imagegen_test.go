@@ -89,6 +89,23 @@ func TestEnsureImageGenerationTool_WebSearchAndImageGen(t *testing.T) {
 	}
 }
 
+func TestEnsureImageGenerationTool_ClientProvidedImageGenFunctionTool(t *testing.T) {
+	body := []byte(`{"model":"gpt-6-astra","tools":[{"type":"function","name":"image_gen.imagegen","parameters":{}}]}`)
+	result := ensureImageGenerationTool(body, "gpt-6-astra", nil)
+
+	if string(result) != string(body) {
+		t.Fatalf("expected body to be unchanged, got %s", string(result))
+	}
+	tools := gjson.GetBytes(result, "tools")
+	arr := tools.Array()
+	if len(arr) != 1 {
+		t.Fatalf("expected 1 tool (no hosted tool appended), got %d", len(arr))
+	}
+	if arr[0].Get("type").String() != "function" || arr[0].Get("name").String() != "image_gen.imagegen" {
+		t.Fatalf("expected client-provided image_gen.imagegen tool preserved, got %s", arr[0].Raw)
+	}
+}
+
 func TestEnsureImageGenerationTool_GPT53CodexSparkDoesNotInjectTool(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.3-codex-spark","input":"draw a cat"}`)
 	result := ensureImageGenerationTool(body, "gpt-5.3-codex-spark", nil)

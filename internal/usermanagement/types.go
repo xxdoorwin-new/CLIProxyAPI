@@ -160,20 +160,20 @@ type ConfiguredAPIKeyRef struct {
 
 // ModelPolicy grants client-visible models to either a user or an API key.
 type ModelPolicy struct {
-	SubjectType PolicySubjectType
-	SubjectID   string
-	AllowAll    bool
-	Models      []string
+	SubjectType    PolicySubjectType
+	SubjectID      string
+	AllowAll       bool
+	Models         []string
 	DisabledModels []string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type SetModelPolicyParams struct {
-	SubjectType PolicySubjectType
-	SubjectID   string
-	AllowAll    bool
-	Models      []string
+	SubjectType    PolicySubjectType
+	SubjectID      string
+	AllowAll       bool
+	Models         []string
 	DisabledModels []string
 }
 

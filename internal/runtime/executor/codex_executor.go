@@ -1769,6 +1769,9 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 		if t.Get("type").String() == "image_generation" {
 			return body
 		}
+		if t.Get("type").String() == "function" && strings.HasPrefix(t.Get("name").String(), "image_gen.") {
+			return body
+		}
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", imageGenToolJSON)
 	return body

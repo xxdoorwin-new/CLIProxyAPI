@@ -28,6 +28,19 @@ var codexClientAllowedReasoningLevels = map[string]struct{}{
 	"xhigh":  {},
 }
 
+// codexClientNonOpenAIFamilies lists catalog model "type" values that never belong in the
+// ChatGPT/Codex-native model picker (they are only reachable there through unified cross-protocol
+// registration, not because they are actual Codex/GPT models).
+var codexClientNonOpenAIFamilies = map[string]struct{}{
+	"claude":      {},
+	"gemini":      {},
+	"antigravity": {},
+	"vertex":      {},
+	"aistudio":    {},
+	"kimi":        {},
+	"xai":         {},
+}
+
 func (h *OpenAIAPIHandler) codexClientModelsResponse() map[string]any {
 	return CodexClientModelsResponse(h.Models())
 }
@@ -57,6 +70,12 @@ func buildCodexClientModels(models []map[string]any) []map[string]any {
 			applyCodexClientVisibilityOverride(entry, id)
 			result = append(result, entry)
 			continue
+		}
+
+		if info := registry.LookupModelInfo(id); info != nil {
+			if _, nonOpenAI := codexClientNonOpenAIFamilies[strings.ToLower(strings.TrimSpace(info.Type))]; nonOpenAI {
+				continue
+			}
 		}
 
 		entry := cloneCodexClientModelMap(defaultTemplate)

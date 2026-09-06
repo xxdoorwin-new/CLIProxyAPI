@@ -11,10 +11,10 @@ type ModelPolicyService struct {
 }
 
 type ResolvedModelPolicy struct {
-	SubjectType PolicySubjectType
-	SubjectID   string
-	AllowAll    bool
-	Models      []string
+	SubjectType    PolicySubjectType
+	SubjectID      string
+	AllowAll       bool
+	Models         []string
 	DisabledModels []string
 }
 
@@ -28,20 +28,20 @@ func (s *ModelPolicyService) SetUserModels(ctx context.Context, userID UserID, a
 
 func (s *ModelPolicyService) SetUserModelsWithDisabled(ctx context.Context, userID UserID, allowAll bool, models, disabledModels []string) (*ModelPolicy, error) {
 	return s.setPolicy(ctx, SetModelPolicyParams{
-		SubjectType: PolicySubjectUser,
-		SubjectID:   string(userID),
-		AllowAll:    allowAll,
-		Models:      NormalizeModelList(models),
+		SubjectType:    PolicySubjectUser,
+		SubjectID:      string(userID),
+		AllowAll:       allowAll,
+		Models:         NormalizeModelList(models),
 		DisabledModels: NormalizeModelList(disabledModels),
 	})
 }
 
 func (s *ModelPolicyService) SetAPIKeyModels(ctx context.Context, keyID APIKeyID, allowAll bool, models []string) (*ModelPolicy, error) {
 	return s.setPolicy(ctx, SetModelPolicyParams{
-		SubjectType: PolicySubjectAPIKey,
-		SubjectID:   string(keyID),
-		AllowAll:    allowAll,
-		Models:      NormalizeModelList(models),
+		SubjectType:    PolicySubjectAPIKey,
+		SubjectID:      string(keyID),
+		AllowAll:       allowAll,
+		Models:         NormalizeModelList(models),
 		DisabledModels: nil,
 	})
 }
@@ -110,10 +110,10 @@ func (s *ModelPolicyService) resolve(ctx context.Context, subjectType PolicySubj
 		// No explicit policy set — default to allow all models so that users
 		// without a configured policy can still use the API.
 		return &ResolvedModelPolicy{
-			SubjectType: subjectType,
-			SubjectID:   "",
-			AllowAll:    true,
-			Models:      nil,
+			SubjectType:    subjectType,
+			SubjectID:      "",
+			AllowAll:       true,
+			Models:         nil,
 			DisabledModels: nil,
 		}, nil
 	}
@@ -121,10 +121,10 @@ func (s *ModelPolicyService) resolve(ctx context.Context, subjectType PolicySubj
 		return nil, err
 	}
 	return &ResolvedModelPolicy{
-		SubjectType: policy.SubjectType,
-		SubjectID:   policy.SubjectID,
-		AllowAll:    policy.AllowAll,
-		Models:      append([]string(nil), policy.Models...),
+		SubjectType:    policy.SubjectType,
+		SubjectID:      policy.SubjectID,
+		AllowAll:       policy.AllowAll,
+		Models:         append([]string(nil), policy.Models...),
 		DisabledModels: append([]string(nil), policy.DisabledModels...),
 	}, nil
 }

@@ -10,13 +10,13 @@ import (
 )
 
 type modelPolicyResponse struct {
-	SubjectType string    `json:"subject_type"`
-	SubjectID   string    `json:"subject_id"`
-	AllowAll    bool      `json:"allow_all"`
-	Models      []string  `json:"models"`
-	DisabledModels []string `json:"disabled_models"`
-	CreatedAt   time.Time `json:"created_at,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+	SubjectType    string    `json:"subject_type"`
+	SubjectID      string    `json:"subject_id"`
+	AllowAll       bool      `json:"allow_all"`
+	Models         []string  `json:"models"`
+	DisabledModels []string  `json:"disabled_models"`
+	CreatedAt      time.Time `json:"created_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
 
 type quotaPolicyResponse struct {
@@ -58,8 +58,8 @@ func (s *Server) handleAdminSetUserModelPolicy(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AllowAll bool     `json:"allow_all"`
-		Models   []string `json:"models"`
+		AllowAll       bool     `json:"allow_all"`
+		Models         []string `json:"models"`
 		DisabledModels []string `json:"disabled_models"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -224,10 +224,10 @@ func toResolvedModelPolicyResponse(policy *usermanagement.ResolvedModelPolicy) m
 		return modelPolicyResponse{Models: []string{}, DisabledModels: []string{}}
 	}
 	return modelPolicyResponse{
-		SubjectType: string(policy.SubjectType),
-		SubjectID:   policy.SubjectID,
-		AllowAll:    policy.AllowAll,
-		Models:      append([]string(nil), policy.Models...),
+		SubjectType:    string(policy.SubjectType),
+		SubjectID:      policy.SubjectID,
+		AllowAll:       policy.AllowAll,
+		Models:         append([]string(nil), policy.Models...),
 		DisabledModels: append([]string{}, policy.DisabledModels...),
 	}
 }
@@ -237,13 +237,13 @@ func toModelPolicyResponse(policy *usermanagement.ModelPolicy) modelPolicyRespon
 		return modelPolicyResponse{Models: []string{}, DisabledModels: []string{}}
 	}
 	return modelPolicyResponse{
-		SubjectType: string(policy.SubjectType),
-		SubjectID:   policy.SubjectID,
-		AllowAll:    policy.AllowAll,
-		Models:      append([]string(nil), policy.Models...),
+		SubjectType:    string(policy.SubjectType),
+		SubjectID:      policy.SubjectID,
+		AllowAll:       policy.AllowAll,
+		Models:         append([]string(nil), policy.Models...),
 		DisabledModels: append([]string{}, policy.DisabledModels...),
-		CreatedAt:   policy.CreatedAt,
-		UpdatedAt:   policy.UpdatedAt,
+		CreatedAt:      policy.CreatedAt,
+		UpdatedAt:      policy.UpdatedAt,
 	}
 }
 

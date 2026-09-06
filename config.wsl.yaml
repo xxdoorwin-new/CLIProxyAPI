@@ -126,8 +126,6 @@ codex-api-key:
   - api-key: sk-b0DSAqRwgJqTFA9zM
     base-url: https://cli.sunnysong.cloud:8817/v1
     models:
-      - name: claude-3-7-sonnet-20250219
-        alias: ""
       - name: gpt-5.3-codex-spark
         alias: ""
       - name: gpt-image-2
@@ -145,6 +143,8 @@ codex-api-key:
       - name: gpt-5.5
         alias: ""
       - name: gpt-5.6-luna
+        alias: ""
+      - name: gpt-6-astra
         alias: ""
     websockets: true
 claude-api-key:
