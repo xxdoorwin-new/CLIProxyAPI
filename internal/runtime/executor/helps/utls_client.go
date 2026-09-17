@@ -156,6 +156,16 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Use this for provider requests that need a Chrome-like TLS fingerprint.
 // Falls back to standard transport for non-HTTPS requests.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	return newUtlsHTTPClient(ctx, cfg, auth, timeout, false)
+}
+
+// NewUtlsHTTPClientWithProxyIdentity creates a Claude upstream client which
+// keeps proxy-owned replacement IP headers when IP masquerading is enabled.
+func NewUtlsHTTPClientWithProxyIdentity(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+	return newUtlsHTTPClient(ctx, cfg, auth, timeout, true)
+}
+
+func newUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration, preserveProxyIdentity bool) *http.Client {
 	var proxyURL string
 	if auth != nil {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
@@ -180,12 +190,17 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		standardTransport = ctxRoundTripper
 	}
 
-	client := &http.Client{
-		Transport: scrubProxyTracingTransport(&fallbackRoundTripper{
+	transport := scrubProxyTracingTransport(&fallbackRoundTripper{
 			utls:     utlsRT,
 			fallback: standardTransport,
-		}, config.IPMasqueradeEnabled(cfg)),
+		}, config.IPMasqueradeEnabled(cfg))
+	if preserveProxyIdentity {
+		transport = preserveProxyIdentityTransport(&fallbackRoundTripper{
+			utls:     utlsRT,
+			fallback: standardTransport,
+		}, config.IPMasqueradeEnabled(cfg))
 	}
+	client := &http.Client{Transport: transport}
 	if timeout > 0 {
 		client.Timeout = timeout
 	}

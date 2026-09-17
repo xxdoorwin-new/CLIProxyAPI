@@ -14,11 +14,27 @@ import (
 )
 
 type proxyTracingScrubRoundTripper struct {
-	base http.RoundTripper
+	base                  http.RoundTripper
+	preserveProxyIdentity bool
 }
 
 func (t proxyTracingScrubRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// A Claude request can deliberately replace the downstream identity with the
+	// proxy host's identity. Keep only those replacement fields; every other
+	// tracing header is still removed below.
+	var proxyIdentity http.Header
+	if t.preserveProxyIdentity {
+		proxyIdentity = make(http.Header, 4)
+		for _, name := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Client-IP"} {
+			if value := req.Header.Get(name); value != "" {
+				proxyIdentity.Set(name, value)
+			}
+		}
+	}
 	misc.ScrubProxyTracingHeaders(req.Header)
+	for name, values := range proxyIdentity {
+		req.Header[name] = values
+	}
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
@@ -34,6 +50,18 @@ func scrubProxyTracingTransport(base http.RoundTripper, enabled bool) http.Round
 		return base
 	}
 	return proxyTracingScrubRoundTripper{base: base}
+}
+
+// preserveProxyIdentityTransport removes untrusted tracing headers while retaining
+// the proxy-owned replacement IP headers placed on a newly-created upstream request.
+func preserveProxyIdentityTransport(base http.RoundTripper, enabled bool) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if !enabled {
+		return base
+	}
+	return proxyTracingScrubRoundTripper{base: base, preserveProxyIdentity: true}
 }
 
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:

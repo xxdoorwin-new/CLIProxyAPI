@@ -10,8 +10,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -40,6 +44,12 @@ import (
 type ClaudeExecutor struct {
 	cfg *config.Config
 }
+
+var (
+	claudeProxyPublicIPOnce sync.Once
+	claudeProxyPublicIP     string
+	resolveClaudeProxyIP    = util.GetIPAddress
+)
 
 // claudeToolPrefix is empty to match real Claude Code behavior (no tool name prefix).
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
@@ -260,7 +270,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewUtlsHTTPClientWithProxyIdentity(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -437,7 +447,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewUtlsHTTPClientWithProxyIdentity(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
@@ -674,7 +684,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		AuthValue: authValue,
 	})
 
-	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewUtlsHTTPClientWithProxyIdentity(ctx, e.cfg, auth, 0)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -1067,6 +1077,59 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	if stream {
 		r.Header.Set("Accept-Encoding", "identity")
 	}
+	applyClaudeProxyIdentityHeaders(r, cfg)
+}
+
+// applyClaudeProxyIdentityHeaders replaces downstream identity values with
+// details of the host that is running this proxy. These are applied last so
+// incoming and per-auth custom headers cannot reintroduce client identity.
+func applyClaudeProxyIdentityHeaders(r *http.Request, cfg *config.Config) {
+	if r == nil {
+		return
+	}
+	if config.DeviceMasqueradeEnabled(cfg) {
+		r.Header.Set("X-Stainless-Os", helps.MapStainlessOS())
+		r.Header.Set("X-Stainless-Arch", helps.MapStainlessArch())
+		r.Header.Set("X-Claude-Code-Session-Id", claudeProxyDeviceID())
+	}
+	if config.IPMasqueradeEnabled(cfg) {
+		ip := claudeProxyIPAddress()
+		r.Header.Set("X-Forwarded-For", ip)
+		r.Header.Set("X-Real-IP", ip)
+		r.Header.Set("X-Client-IP", ip)
+		r.Header.Set("Forwarded", claudeForwardedHeader(ip))
+	}
+}
+
+func claudeProxyIPAddress() string {
+	claudeProxyPublicIPOnce.Do(func() {
+		candidate := strings.TrimSpace(resolveClaudeProxyIP())
+		if net.ParseIP(candidate) == nil {
+			claudeProxyPublicIP = "127.0.0.1"
+			return
+		}
+		claudeProxyPublicIP = candidate
+	})
+	return claudeProxyPublicIP
+}
+
+func claudeForwardedHeader(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed != nil && parsed.To4() == nil {
+		return `for="[` + parsed.String() + `]"`
+	}
+	return "for=" + ip
+}
+
+// claudeProxyDeviceID derives a stable UUID from host-local characteristics.
+// It deliberately does not use any identifier supplied by the downstream client.
+func claudeProxyDeviceID() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "unknown-host"
+	}
+	fingerprint := strings.Join([]string{"cli-proxy-api", hostname, runtime.GOOS, runtime.GOARCH}, "\x00")
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fingerprint)).String()
 }
 
 func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {

@@ -49,6 +49,34 @@ func TestQuotaServiceReportsAvailabilityFromCurrentRollup(t *testing.T) {
 	}
 }
 
+func TestQuotaServiceReportsUsageWithoutAnExplicitQuotaPolicy(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	user := createTestUser(t, ctx, store)
+	key := createTestAPIKey(t, ctx, store, user.ID)
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+
+	if _, err := NewUsageRecorder(store, UsageRecorderConfig{MissingUsageCredits: 7}).RecordUsage(ctx, RecordUsageParams{
+		UserID:      user.ID,
+		APIKeyID:    key.ID,
+		RequestID:   "req-unlimited-policy",
+		Model:       "unpriced-model",
+		RequestedAt: now,
+	}); err != nil {
+		t.Fatalf("RecordUsage() error = %v", err)
+	}
+
+	service := NewQuotaService(store, store)
+	service.now = func() time.Time { return now }
+	summary, err := service.Summary(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.LimitCredits != 0 || summary.UsedCredits != 7 || summary.RemainingCredits != 0 {
+		t.Fatalf("summary = %#v, want unlimited limit with used=7", summary)
+	}
+}
+
 func TestQuotaServiceMonthlyRolloverStartsFresh(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)

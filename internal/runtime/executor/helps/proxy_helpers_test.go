@@ -106,6 +106,44 @@ func TestProxyTracingScrubRoundTripperDisabledPreservesForwardedIPHeaders(t *tes
 	}
 }
 
+func TestPreserveProxyIdentityTransportRetainsOnlyReplacementIPHeaders(t *testing.T) {
+	t.Parallel()
+
+	var got http.Header
+	base := scrubTestRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		got = req.Header.Clone()
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: req}, nil
+	})
+	client := &http.Client{Transport: preserveProxyIdentityTransport(base, true)}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("X-Forwarded-For", "198.51.100.42")
+	req.Header.Set("X-Real-IP", "198.51.100.42")
+	req.Header.Set("X-Client-IP", "198.51.100.42")
+	req.Header.Set("Forwarded", "for=198.51.100.42")
+	req.Header.Set("Via", "downstream-proxy")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	_ = resp.Body.Close()
+
+	for _, key := range []string{"X-Forwarded-For", "X-Real-IP", "X-Client-IP"} {
+		if got.Get(key) != "198.51.100.42" {
+			t.Fatalf("%s = %q, want proxy identity", key, got.Get(key))
+		}
+	}
+	if got.Get("Forwarded") != "for=198.51.100.42" {
+		t.Fatalf("Forwarded = %q, want proxy identity", got.Get("Forwarded"))
+	}
+	if got.Get("Via") != "" {
+		t.Fatalf("Via = %q, want removed", got.Get("Via"))
+	}
+}
+
 type scrubTestRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f scrubTestRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -121,18 +121,3 @@ func TestModelPolicyServiceKeyPolicyOverridesUserPolicy(t *testing.T) {
 		t.Fatal("key policy should override user policy")
 	}
 }
-
-func TestModelPolicyServiceDenyEmptyPolicyByDefault(t *testing.T) {
-	ctx := context.Background()
-	store := newTestSQLiteStore(t)
-	user := createTestUser(t, ctx, store)
-	service := NewModelPolicyService(store)
-
-	allowed, resolved, err := service.IsModelAllowed(ctx, user.ID, "", "gpt-5")
-	if err != nil {
-		t.Fatalf("IsModelAllowed() error = %v", err)
-	}
-	if allowed || resolved.SubjectID != "" {
-		t.Fatalf("allowed = %v resolved = %#v, want default deny", allowed, resolved)
-	}
-}

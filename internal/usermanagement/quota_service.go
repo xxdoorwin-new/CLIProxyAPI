@@ -43,17 +43,16 @@ func (s *QuotaService) Summary(ctx context.Context, userID UserID) (*QuotaSummar
 	}
 	policy, err := s.policies.GetQuotaPolicy(ctx, userID)
 	if errors.Is(err, ErrNotFound) {
-		return &QuotaSummary{
-			UserID:           userID,
-			Period:           QuotaPeriodMonthly,
-			LimitCredits:     0,
-			UsedCredits:      0,
-			RemainingCredits: 0,
-			PeriodStart:      CurrentMonthlyPeriod(s.now().UTC()).Start,
-			PeriodEnd:        CurrentMonthlyPeriod(s.now().UTC()).End,
-		}, nil
+		// A missing policy has the same unlimited semantics as a zero limit.
+		// Usage may already have been recorded against that implicit policy, so
+		// continue to load its rollup rather than reporting zero usage.
+		policy = &QuotaPolicy{
+			UserID:       userID,
+			Period:       QuotaPeriodMonthly,
+			LimitCredits: 0,
+		}
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	period := CurrentMonthlyPeriod(s.now().UTC())

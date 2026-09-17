@@ -143,6 +143,62 @@ func TestApplyClaudeHeaders_DeviceMasqueradePinsRuntimeAndLang(t *testing.T) {
 	}
 }
 
+func TestApplyClaudeHeaders_MasqueradeReplacesClientIdentityWithProxyIdentity(t *testing.T) {
+	oldResolver := resolveClaudeProxyIP
+	resolveClaudeProxyIP = func() string { return "198.51.100.42" }
+	claudeProxyPublicIPOnce = sync.Once{}
+	claudeProxyPublicIP = ""
+	t.Cleanup(func() {
+		resolveClaudeProxyIP = oldResolver
+		claudeProxyPublicIPOnce = sync.Once{}
+		claudeProxyPublicIP = ""
+	})
+
+	cfg := &config.Config{Privacy: config.PrivacyConfig{
+		IPMasquerade:     true,
+		DeviceMasquerade: true,
+	}}
+	incoming := http.Header{
+		"X-Forwarded-For":          []string{"203.0.113.8"},
+		"X-Real-IP":                []string{"203.0.113.9"},
+		"Forwarded":                []string{"for=203.0.113.10"},
+		"X-Client-IP":              []string{"203.0.113.11"},
+		"X-Claude-Code-Session-Id": []string{"downstream-device-id"},
+		"X-Stainless-Os":           []string{"Windows"},
+		"X-Stainless-Arch":         []string{"x64"},
+	}
+
+	req := newClaudeHeaderTestRequest(t, incoming)
+	applyClaudeHeaders(req, nil, "key-proxy-identity", false, nil, cfg)
+
+	for _, name := range []string{"X-Forwarded-For", "X-Real-IP", "X-Client-IP"} {
+		if got := req.Header.Get(name); got != "198.51.100.42" {
+			t.Fatalf("%s = %q, want proxy IP", name, got)
+		}
+	}
+	if got := req.Header.Get("Forwarded"); got != "for=198.51.100.42" {
+		t.Fatalf("Forwarded = %q, want proxy identity", got)
+	}
+	if got := req.Header.Get("X-Claude-Code-Session-Id"); got != claudeProxyDeviceID() {
+		t.Fatalf("X-Claude-Code-Session-Id = %q, want proxy device ID", got)
+	}
+	if got := req.Header.Get("X-Stainless-Os"); got != helps.MapStainlessOS() {
+		t.Fatalf("X-Stainless-Os = %q, want proxy OS %q", got, helps.MapStainlessOS())
+	}
+	if got := req.Header.Get("X-Stainless-Arch"); got != helps.MapStainlessArch() {
+		t.Fatalf("X-Stainless-Arch = %q, want proxy arch %q", got, helps.MapStainlessArch())
+	}
+}
+
+func TestClaudeForwardedHeader(t *testing.T) {
+	if got := claudeForwardedHeader("198.51.100.42"); got != "for=198.51.100.42" {
+		t.Fatalf("IPv4 Forwarded header = %q", got)
+	}
+	if got := claudeForwardedHeader("2001:db8::42"); got != `for="[2001:db8::42]"` {
+		t.Fatalf("IPv6 Forwarded header = %q", got)
+	}
+}
+
 func TestApplyClaudeHeaders_TracksHighestClaudeCLIFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true
